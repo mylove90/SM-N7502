@@ -141,6 +141,9 @@ static DEFINE_SPINLOCK(reg_spinlock);
 #define MSM_PRONTO_PLL_BASE				0xfb21b1c0
 #define PRONTO_PLL_STATUS_OFFSET		0x1c
 
+#define MSM_PRONTO_TXP_PHY_ABORT        0xfb080488
+#define MSM_PRONTO_BRDG_ERR_SRC         0xfb080fb0
+
 #define WCNSS_DEF_WLAN_RX_BUFF_COUNT		1024
 #define WCNSS_VBATT_THRESHOLD		3500000
 #define WCNSS_VBATT_GUARD		200
@@ -338,6 +341,8 @@ static struct {
 	void __iomem *pronto_ccpu_base;
 	void __iomem *pronto_saw2_base;
 	void __iomem *pronto_pll_base;
+	void __iomem *wlan_tx_phy_aborts;
+	void __iomem *wlan_brdg_err_source;
 	void __iomem *fiq_reg;
 	int	nv_downloaded;
 	unsigned char *fw_cal_data;
@@ -521,7 +526,8 @@ void wcnss_pronto_log_debug_regs(void)
 				__func__);
 		return;
 	}
-	reg &= ~(PRONTO_PMU_COM_GDSCR_SW_COLLAPSE | PRONTO_PMU_COM_GDSCR_HW_CTRL);
+	reg &= ~(PRONTO_PMU_COM_GDSCR_SW_COLLAPSE
+			| PRONTO_PMU_COM_GDSCR_HW_CTRL);
 	writel_relaxed(reg, reg_addr);
 
 	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_CBCR_OFFSET;
@@ -1967,6 +1973,21 @@ wcnss_trigger_config(struct platform_device *pdev)
 			goto fail_ioremap6;
 		}
 
+		penv->wlan_tx_phy_aborts =  ioremap(MSM_PRONTO_TXP_PHY_ABORT,
+					SZ_8);
+		if (!penv->wlan_tx_phy_aborts) {
+			ret = -ENOMEM;
+			pr_err("%s: ioremap wlan TX PHY failed\n", __func__);
+			goto fail_ioremap7;
+		}
+		penv->wlan_brdg_err_source =  ioremap(MSM_PRONTO_BRDG_ERR_SRC,
+							SZ_8);
+		if (!penv->wlan_brdg_err_source) {
+			ret = -ENOMEM;
+			pr_err("%s: ioremap wlan BRDG ERR failed\n", __func__);
+			goto fail_ioremap8;
+		}
+
 	}
 	penv->adc_tm_dev = qpnp_get_adc_tm(&penv->pdev->dev, "wcnss");
 	if (IS_ERR(penv->adc_tm_dev)) {
@@ -1992,6 +2013,12 @@ wcnss_trigger_config(struct platform_device *pdev)
 fail_pil:
 	if (penv->riva_ccu_base)
 		iounmap(penv->riva_ccu_base);
+	if (penv->wlan_brdg_err_source)
+		iounmap(penv->wlan_brdg_err_source);
+fail_ioremap8:
+	if (penv->wlan_tx_phy_aborts)
+		iounmap(penv->wlan_tx_phy_aborts);
+fail_ioremap7:
 	if (penv->pronto_pll_base)
 		iounmap(penv->pronto_pll_base);
 fail_ioremap6:
