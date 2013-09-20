@@ -83,12 +83,18 @@ static DEFINE_SPINLOCK(reg_spinlock);
 
 #define PRONTO_PMU_SPARE_OFFSET       0x1088
 
-#define PRONTO_PMU_GDSCR_OFFSET       0x0024
+#define PRONTO_PMU_COM_GDSCR_OFFSET       0x0024
 #define PRONTO_PMU_GDSCR_SW_COLLAPSE  BIT(0)
 #define PRONTO_PMU_GDSCR_HW_CTRL      BIT(1)
 
 #define PRONTO_PMU_CBCR_OFFSET        0x0008
 #define PRONTO_PMU_CBCR_CLK_EN        BIT(0)
+
+#define PRONTO_PMU_COM_CPU_CBCR_OFFSET     0x0030
+#define PRONTO_PMU_COM_AHB_CBCR_OFFSET     0x0034
+#define PRONTO_PMU_CFG_OFFSET              0x1004
+#define PRONTO_PMU_COM_CSR_OFFSET          0x1040
+#define PRONTO_PMU_SOFT_RESET_OFFSET       0x104C
 
 #define MSM_PRONTO_A2XB_BASE		0xfb100400
 #define A2XB_CFG_OFFSET				0x00
@@ -436,9 +442,34 @@ void wcnss_pronto_log_debug_regs(void)
 	reg = readl_relaxed(reg_addr);
 	pr_info_ratelimited("%s:  PRONTO_PMU_SPARE %08x\n", __func__, reg);
 
-	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_GDSCR_OFFSET;
+	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_COM_GDSCR_OFFSET;
 	reg = readl_relaxed(reg_addr);
-	reg >>= 31;
+	pr_info_ratelimited("%s:  PRONTO_PMU_COM_GDSCR %08x\n",
+						__func__, reg);
+	reg >>= 31;	
+	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_COM_CPU_CBCR_OFFSET;
+	reg = readl_relaxed(reg_addr);
+	pr_info_ratelimited("%s:  PRONTO_PMU_COM_CPU_CBCR %08x\n",
+						__func__, reg);
+
+	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_COM_AHB_CBCR_OFFSET;
+	reg = readl_relaxed(reg_addr);
+	pr_info_ratelimited("%s:  PRONTO_PMU_COM_AHB_CBCR %08x\n",
+						__func__, reg);
+
+	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_CFG_OFFSET;
+	reg = readl_relaxed(reg_addr);
+	pr_info_ratelimited("%s:  PRONTO_PMU_CFG %08x\n", __func__, reg);
+
+	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_COM_CSR_OFFSET;
+	reg = readl_relaxed(reg_addr);
+	pr_info_ratelimited("%s:  PRONTO_PMU_COM_CSR %08x\n",
+						__func__, reg);
+
+	reg_addr = penv->msm_wcnss_base + PRONTO_PMU_SOFT_RESET_OFFSET;
+	reg = readl_relaxed(reg_addr);
+	pr_info_ratelimited("%s:  PRONTO_PMU_SOFT_RESET %08x\n",
+						__func__, reg);
 
 	if (!reg) {
 		pr_info_ratelimited("%s:  Cannot log, Pronto common SS is power collapsed\n",
