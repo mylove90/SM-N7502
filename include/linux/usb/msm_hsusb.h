@@ -25,6 +25,9 @@
 #include <linux/wakelock.h>
 #include <linux/pm_qos.h>
 #include <linux/hrtimer.h>
+#ifdef CONFIG_USB_HOST_NOTIFY
+#include <linux/host_notify.h>
+#endif
 #include <linux/power_supply.h>
 #include <linux/cdev.h>
 /*
@@ -102,11 +105,11 @@ enum msm_usb_phy_type {
 	SNPS_28NM_INTEGRATED_PHY,
 };
 
-#define IDEV_CHG_MAX	1500
+#define IDEV_CHG_MAX	1000
 #define IDEV_CHG_MIN	500
 #define IUNIT		100
 
-#define IDEV_ACA_CHG_MAX	1500
+#define IDEV_ACA_CHG_MAX	1000
 #define IDEV_ACA_CHG_LIMIT	500
 
 /**
@@ -246,6 +249,11 @@ struct msm_otg_platform_data {
 	unsigned int mpm_dmshv_int;
 	bool mhl_enable;
 	bool disable_reset_on_disconnect;
+#ifdef CONFIG_USB_HOST_NOTIFY
+        int otg_power_gpio;
+        int otg_test_gpio;
+        int ovp_ctrl_gpio;
+#endif
 	bool pnoc_errata_fix;
 	bool enable_lpm_on_dev_suspend;
 	bool core_clk_always_on_workaround;
@@ -390,6 +398,16 @@ struct msm_otg {
 	unsigned mA_port;
 	struct timer_list id_timer;
 	unsigned long caps;
+#ifdef CONFIG_USB_HOST_NOTIFY
+        struct host_notify_dev ndev;
+        struct work_struct notify_work;
+        unsigned notify_state;
+        struct work_struct otg_power_work;
+        struct delayed_work late_power_work;
+        struct timer_list sm_work_timer;
+        int smartdock;
+#endif
+        bool disable_peripheral;
 	struct msm_xo_voter *xo_handle;
 	uint32_t bus_perf_client;
 	bool mhl_enabled;
@@ -440,6 +458,7 @@ struct msm_otg {
 	unsigned int host_mode;
 	unsigned int voltage_max;
 	unsigned int current_max;
+	unsigned int usbin_health;
 
 	dev_t ext_chg_dev;
 	struct cdev ext_chg_cdev;
@@ -448,6 +467,7 @@ struct msm_otg {
 	bool ext_chg_opened;
 	bool ext_chg_active;
 	struct completion ext_chg_wait;
+	bool pm_done;
 };
 
 struct ci13xxx_platform_data {
@@ -563,6 +583,7 @@ static inline void msm_hw_bam_disable(bool bam_disable)
 #ifdef CONFIG_USB_DWC3_MSM
 int msm_ep_config(struct usb_ep *ep);
 int msm_ep_unconfig(struct usb_ep *ep);
+void dwc3_tx_fifo_resize_request(struct usb_ep *ep, bool qdss_enable);
 int msm_data_fifo_config(struct usb_ep *ep, u32 addr, u32 size,
 	u8 dst_pipe_idx);
 
@@ -584,6 +605,12 @@ static inline int msm_ep_config(struct usb_ep *ep)
 static inline int msm_ep_unconfig(struct usb_ep *ep)
 {
 	return -ENODEV;
+}
+
+static inline void dwc3_tx_fifo_resize_request(
+					struct usb_ep *ep, bool qdss_enable)
+{
+	return;
 }
 
 static inline void msm_dwc3_restart_usb_session(struct usb_gadget *gadget)

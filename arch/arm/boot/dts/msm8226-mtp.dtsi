@@ -29,20 +29,11 @@
 			synaptics,irq-gpio = <&msmgpio 17 0x2008>;
 			synaptics,button-map = <139 102 158>;
 			synaptics,i2c-pull-up;
+			synaptics,power-down;
+			synaptics,disable-gpios;
 		};
 	};
 
-	i2c@f9925000 { /* BLSP1 QUP3 */
-		nfc-nci@0e {
-			compatible = "qcom,nfc-nci";
-			reg = <0x0e>;
-			qcom,irq-gpio = <&msmgpio 21 0x00>;
-			qcom,dis-gpio = <&msmgpio 20 0x00>;
-			interrupt-parent = <&msmgpio>;
-			interrupts = <21 0>;
-			qcom,clk-gpio = <&pm8226_gpios 3 0>;
-		};
-	};
 	gpio_keys {
 		compatible = "gpio-keys";
 		input-name = "gpio-keys";
@@ -104,7 +95,7 @@
 			"MIC BIAS2 External", "ANCLeft Headset Mic";
 
 		qcom,cdc-mclk-gpios = <&pm8226_gpios 1 0>;
-		qcom,cdc-vdd-spkr-gpios = <&pm8226_gpios 2 0>;
+		/*qcom,cdc-vdd-spkr-gpios = <&pm8226_gpios 2 0>;*/
 	};
 
 	sound-9302 {
@@ -460,6 +451,16 @@
 	};
 };
 
+/ {
+	mtp_batterydata: qcom,battery-data {
+		qcom,rpull-up-kohm = <100>;
+		qcom,vref-batt-therm = <1800000>;
+
+		/include/ "batterydata-palladium.dtsi"
+		/include/ "batterydata-mtp-3000mah.dtsi"
+	};
+};
+
 &pm8226_bms {
 	status = "ok";
 	qcom,enable-fcc-learning;
@@ -467,10 +468,12 @@
 	qcom,min-fcc-ocv-pc = <30>;
 	qcom,min-fcc-learning-samples = <5>;
 	qcom,fcc-resolution = <10>;
+	qcom,battery-data = <&mtp_batterydata>;
 };
 
 &pm8226_chg {
 	qcom,charging-disabled;
+	qcom,battery-data = <&mtp_batterydata>;
 };
 
 &slim_msm {

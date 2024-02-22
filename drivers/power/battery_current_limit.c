@@ -125,11 +125,16 @@ static int bcl_get_resistance(int *rbatt_mohm)
 {
 	static struct power_supply *psy;
 	union power_supply_propval ret = {0,};
+	static int debug_counter = 0;
 
 	if (psy == NULL) {
 		psy = power_supply_get_by_name("bms");
 		if (psy == NULL) {
 			pr_err("failed to get ps bms\n");
+			/* Qualcomm debug code for SR 01338095 */
+			if(debug_counter++ >= 10){
+				BUG_ON(1);
+			}
 			return -EINVAL;
 		}
 	}

@@ -13,11 +13,17 @@
 #define __QDSP6VOICE_H__
 
 #include <mach/qdsp6v2/apr.h>
+#include <mach/qdsp6v2/rtac.h>
 #include <linux/msm_ion.h>
 #include <sound/voice_params.h>
 
 #define MAX_VOC_PKT_SIZE 642
+/* msm8x26-qsc1105 sglte */
+#if defined(CONFIG_MACH_BAFFIN2_CHN_CMCC)
+#define SESSION_NAME_LEN 21
+#else
 #define SESSION_NAME_LEN 20
+#endif
 #define NUM_OF_MEMORY_BLOCKS 1
 #define NUM_OF_BUFFERS 2
 /*
@@ -70,6 +76,14 @@ struct voice_rec_route_state {
 	u16 dl_flag;
 };
 
+#ifdef CONFIG_SEC_DHA_SOL_MAL
+struct voice_dha_data {
+	short dha_mode;
+	short dha_select;
+	short dha_params[12];
+};
+#endif /* CONFIG_SEC_DHA_SOL_MAL */
+
 enum {
 	VOC_INIT = 0,
 	VOC_RUN,
@@ -98,6 +112,10 @@ struct mem_map_table {
 	struct ion_handle	*handle;
 	struct ion_client	*client;
 };
+
+#ifdef CONFIG_SEC_DHA_SOL_MAL
+#define VSS_ICOMMON_CMD_DHA_SET 0x0001128A
+#endif /*CONFIG_SEC_DHA_SOL_MAL*/
 
 /* Common */
 #define VSS_ICOMMON_CMD_SET_UI_PROPERTY 0x00011103
@@ -186,6 +204,9 @@ struct vss_unmap_memory_cmd {
 #define VSS_IMVM_CMD_STOP_VOICE				0x00011192
 /**< No payload. Wait for APRV2_IBASIC_RSP_RESULT response. */
 
+#define VSS_IMVM_CMD_PAUSE_VOICE			0x0001137D
+/* No payload. Wait for APRV2_IBASIC_RSP_RESULT response. */
+
 #define VSS_ISTREAM_CMD_ATTACH_VOCPROC			0x000110F8
 /**< Wait for APRV2_IBASIC_RSP_RESULT response. */
 
@@ -213,7 +234,8 @@ enum msm_audio_voc_rate {
 		VOC_8_RATE, /* 1/8 rate    */
 		VOC_4_RATE, /* 1/4 rate    */
 		VOC_2_RATE, /* 1/2 rate    */
-		VOC_1_RATE  /* Full rate   */
+		VOC_1_RATE,  /* Full rate   */
+		VOC_8_RATE_NC  /* Noncritical 1/8 rate   */
 };
 
 struct vss_istream_cmd_set_tty_mode_t {
@@ -752,6 +774,46 @@ struct vss_icommon_cmd_set_ui_property_enable_t {
 	/* Reserved, set to 0. */
 };
 
+#define VOICE_MODULE_DHA             0x10001020
+#define VOICE_PARAM_DHA_DYNAMIC      0x10001022
+#define VOICEPROC_MODULE_VENC        0x00010F07
+#define VOICE_PARAM_LOOPBACK_ENABLE  0x00010E18
+
+struct vss_icommon_cmd_set_loopback_enable_t {
+	uint32_t module_id;
+	/* Unique ID of the module. */
+	uint32_t param_id;
+	/* Unique ID of the parameter. */
+	uint16_t param_size;
+	/* Size of the parameter in bytes: MOD_ENABLE_PARAM_LEN */
+	uint16_t reserved;
+	/* Reserved; set to 0. */
+	uint16_t loopback_enable;
+	uint16_t reserved_field;
+	/* Reserved, set to 0. */
+};
+
+#ifdef CONFIG_SEC_DHA_SOL_MAL
+struct oem_dha_parm_send_t {
+	uint32_t module_id;
+	/* Unique ID of the module. */
+	uint32_t param_id;
+	/* Unique ID of the parameter. */
+	uint16_t param_size;
+	/* Size of the parameter in bytes: MOD_ENABLE_PARAM_LEN */
+	uint16_t reserved;
+	/* Reserved; set to 0. */
+	uint16_t eq_mode;
+	uint16_t select;
+	int16_t param[12];
+} __packed;
+
+struct oem_dha_parm_send_cmd {
+	struct apr_hdr hdr;
+	struct oem_dha_parm_send_t dha_send;
+} __packed;
+#endif /* CONFIG_SEC_DHA_SOL_MAL*/
+
 /*
  * Event sent by the stream to the client that enables Rx DTMF
  * detection whenever DTMF is detected in the Rx path.
@@ -882,6 +944,14 @@ struct cvs_enc_buffer_consumed_cmd {
 	struct apr_hdr hdr;
 } __packed;
 
+struct cvs_set_loopback_enable_cmd {
+	struct apr_hdr hdr;
+	uint32_t mem_handle;
+	uint64_t mem_address;
+	uint32_t mem_size;
+	struct vss_icommon_cmd_set_loopback_enable_t vss_set_loopback;
+} __packed;
+
 struct vss_istream_cmd_set_oob_packet_exchange_config_t {
 	struct apr_hdr hdr;
 	uint32_t mem_handle;
@@ -977,6 +1047,8 @@ struct vss_istream_cmd_set_packet_exchange_mode_t {
 /*CDMA EVRC-B vocoder modem format */
 #define VSS_MEDIA_ID_4GV_WB_MODEM	0x00010FC4
 /*CDMA EVRC-WB vocoder modem format */
+#define VSS_MEDIA_ID_4GV_NW_MODEM	0x00010FC5
+/*CDMA EVRC-NW vocoder modem format */
 
 #define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2	0x000112BF
 
@@ -1207,6 +1279,7 @@ struct cvp_set_mute_cmd {
 /* CB for up-link packets. */
 typedef void (*ul_cb_fn)(uint8_t *voc_pkt,
 			 uint32_t pkt_len,
+			 uint32_t timestamp,
 			 void *private_data);
 
 /* CB for down-link packets. */
@@ -1226,6 +1299,8 @@ struct mvs_driver_info {
 	ul_cb_fn ul_cb;
 	dl_cb_fn dl_cb;
 	void *private_data;
+	uint32_t evrc_min_rate;
+	uint32_t evrc_max_rate;
 };
 
 struct dtmf_driver_info {
@@ -1301,6 +1376,9 @@ struct voice_data {
 	struct incall_music_info music_info;
 
 	struct voice_rec_route_state rec_route_state;
+#ifdef CONFIG_SEC_DHA_SOL_MAL
+	struct voice_dha_data sec_dha_data;
+#endif /* CONFIG_SEC_DHA_SOL_MAL */
 };
 
 struct cal_mem {
@@ -1328,6 +1406,10 @@ struct common_data {
 
 	struct mem_map_table cal_mem_map_table;
 	uint32_t cal_mem_handle;
+
+	struct mem_map_table rtac_mem_map_table;
+	uint32_t rtac_mem_handle;
+
 	struct cal_mem cvp_cal;
 	struct cal_mem cvs_cal;
 
@@ -1357,7 +1439,9 @@ void voc_register_dtmf_rx_detection_cb(dtmf_rx_det_cb_fn dtmf_rx_ul_cb,
 void voc_config_vocoder(uint32_t media_type,
 			uint32_t rate,
 			uint32_t network_type,
-			uint32_t dtx_mode);
+			uint32_t dtx_mode,
+			uint32_t evrc_min_rate,
+			uint32_t evrc_max_rate);
 
 enum {
 	DEV_RX = 0,
@@ -1405,6 +1489,10 @@ enum vsid_app_type {
 };
 
 /* called  by alsa driver */
+#ifdef CONFIG_SEC_DHA_SOL_MAL
+int voice_sec_set_dha_data(uint32_t session_id, short mode,
+					short select, short *parameters);
+#endif /* CONFIG_SEC_DHA_SOL_MAL*/
 int voc_set_pp_enable(uint32_t session_id, uint32_t module_id,
 		      uint32_t enable);
 int voc_get_pp_enable(uint32_t session_id, uint32_t module_id);
@@ -1437,10 +1525,15 @@ int is_voc_initialized(void);
 int voc_register_vocproc_vol_table(void);
 int voc_deregister_vocproc_vol_table(void);
 
+int voc_unmap_cal_blocks(void);
+int voc_map_rtac_block(struct rtac_cal_block_data *cal_block);
+int voc_unmap_rtac_block(uint32_t *mem_map_handle);
+
 uint32_t voc_get_session_id(char *name);
 
 int voc_start_playback(uint32_t set, uint16_t port_id);
 int voc_start_record(uint32_t port_id, uint32_t set, uint32_t session_id);
 int voice_get_idx_for_session(u32 session_id);
-
+int voc_get_loopback_enable(void);
+void voc_set_loopback_enable(int loopback_enable);
 #endif

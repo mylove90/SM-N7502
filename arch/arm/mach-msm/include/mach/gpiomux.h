@@ -113,6 +113,9 @@ struct msm_gpiomux_configs {
 enum msm_tlmm_misc_reg {
 	TLMM_ETM_MODE_REG = 0x2014,
 	TLMM_SDC2_HDRV_PULL_CTL = 0x2048,
+	TLMM_SPARE_REG = 0x2024,
+	TLMM_CDC_HDRV_CTL = 0x2054,
+	TLMM_CDC_HDRV_PULL_CTL = 0x2058,
 };
 
 void msm_tlmm_misc_reg_write(enum msm_tlmm_misc_reg misc_reg, int val);
@@ -157,6 +160,7 @@ int msm_gpiomux_put(unsigned gpio);
  */
 int msm_gpiomux_write(unsigned gpio, enum msm_gpiomux_setting which,
 	struct gpiomux_setting *setting, struct gpiomux_setting *old_setting);
+void msm_gpiomux_read(unsigned gpio, struct gpiomux_setting *val);
 
 /* Architecture-internal function for use by the framework only.
  * This function can assume the following:

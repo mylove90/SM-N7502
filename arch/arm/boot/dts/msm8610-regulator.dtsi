@@ -20,6 +20,7 @@
 			reg = <0x1700 0x100>;
 			regulator-min-microvolt = <900000>;
 			regulator-max-microvolt = <1350000>;
+			qcom,mode = "auto";
 		};
 	};
 };
@@ -41,10 +42,15 @@
 		qcom,pvs-fuse = <23 6 5>;
 		qcom,pvs-fuse-redun = <61 47 5>;
 
-		qcom,pvs-bin-process = <1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
-					1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1>;
-		qcom,pvs-corner-ceiling-slow = <1050000 1150000 1275000>;
-		qcom,pvs-corner-ceiling-nom  = <1050000 1075000 1200000>;
+		qcom,pvs-init-voltage = <1275000 1275000 1275000 1275000 1275000
+					1275000 1275000 1275000 1275000 1275000
+					1275000 1275000 1275000 1275000 1275000
+					1275000 1275000 1275000 1275000 1275000
+					1275000 1275000 1275000 1275000 1275000
+					1275000 1275000 1275000 1275000 1275000
+					1275000 1275000>;
+		qcom,pvs-corner-ceiling-slow = <1150000 1150000 1275000>;
+		qcom,pvs-corner-ceiling-nom  = <1075000 1075000 1200000>;
 		qcom,pvs-corner-ceiling-fast = <1050000 1050000 1140000>;
 		vdd-apc-supply = <&pm8110_s2>;
 
@@ -79,6 +85,7 @@
 		qcom,cpr-fuse-redun-ro-sel = <44 26 29>;
 
 		qcom,cpr-enable;
+		qcom,use-tz-api;
 	};
 };
 

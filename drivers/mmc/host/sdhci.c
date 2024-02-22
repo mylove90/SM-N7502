@@ -110,7 +110,7 @@ static void sdhci_dumpregs(struct sdhci_host *host)
 		sdhci_readl(host, SDHCI_INT_ENABLE),
 		sdhci_readl(host, SDHCI_SIGNAL_ENABLE));
 	pr_info(DRIVER_NAME ": AC12 err: 0x%08x | Slot int: 0x%08x\n",
-		sdhci_readw(host, SDHCI_ACMD12_ERR),
+		sdhci_readw(host, SDHCI_AUTO_CMD_ERR),
 		sdhci_readw(host, SDHCI_SLOT_INT_STATUS));
 	pr_info(DRIVER_NAME ": Caps:     0x%08x | Caps_1:   0x%08x\n",
 		sdhci_readl(host, SDHCI_CAPABILITIES),
@@ -118,6 +118,12 @@ static void sdhci_dumpregs(struct sdhci_host *host)
 	pr_info(DRIVER_NAME ": Cmd:      0x%08x | Max curr: 0x%08x\n",
 		sdhci_readw(host, SDHCI_COMMAND),
 		sdhci_readl(host, SDHCI_MAX_CURRENT));
+	pr_info(DRIVER_NAME ": Resp 1:   0x%08x | Resp 0:   0x%08x\n",
+		sdhci_readl(host, SDHCI_RESPONSE + 0x4),
+		sdhci_readl(host, SDHCI_RESPONSE));
+	pr_info(DRIVER_NAME ": Resp 3:   0x%08x | Resp 2:   0x%08x\n",
+		sdhci_readl(host, SDHCI_RESPONSE + 0xC),
+		sdhci_readl(host, SDHCI_RESPONSE + 0x8));
 	pr_info(DRIVER_NAME ": Host ctl2: 0x%08x\n",
 		sdhci_readw(host, SDHCI_HOST_CONTROL2));
 
@@ -278,7 +284,8 @@ static void sdhci_init(struct sdhci_host *host, int soft)
 		SDHCI_INT_BUS_POWER | SDHCI_INT_DATA_END_BIT |
 		SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_TIMEOUT | SDHCI_INT_INDEX |
 		SDHCI_INT_END_BIT | SDHCI_INT_CRC | SDHCI_INT_TIMEOUT |
-		SDHCI_INT_DATA_END | SDHCI_INT_RESPONSE);
+		SDHCI_INT_DATA_END | SDHCI_INT_RESPONSE |
+			     SDHCI_INT_AUTO_CMD_ERR);
 
 	if (soft) {
 		/* force clock reconfiguration */
@@ -1479,6 +1486,12 @@ static bool sdhci_check_state(struct sdhci_host *host)
 		return false;
 }
 
+struct mmc_cd_gpio {
+	unsigned int gpio;
+	char label[0];
+	bool status;
+};
+
 static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct sdhci_host *host;
@@ -1520,8 +1533,12 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	host->mrq = mrq;
 
 	/* If polling, assume that the card is always present. */
-	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION)
-		present = true;
+	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION)  {
+		if ((struct mmc_cd_gpio *)(mmc->hotplug.handler_priv) == NULL)
+			present = true;
+		else
+			present = ((struct mmc_cd_gpio *)(mmc->hotplug.handler_priv))->status;
+	}
 	else
 		present = sdhci_readl(host, SDHCI_PRESENT_STATE) &
 				SDHCI_CARD_PRESENT;
@@ -1568,6 +1585,16 @@ static void sdhci_do_set_ios(struct sdhci_host *host, struct mmc_ios *ios)
 	if (host->flags & SDHCI_DEVICE_DEAD) {
 		if (host->vmmc && ios->power_mode == MMC_POWER_OFF)
 			mmc_regulator_set_ocr(host->mmc, host->vmmc, 0);
+		mutex_unlock(&host->ios_mutex);
+		return;
+	}
+
+	if ((ios->power_mode & MMC_POWER_UP) && !host->pwr) {
+		if (!host->clock) {
+		host->ops->set_clock(host, 400000);	// Prepare clock for host controller
+		}
+
+		vdd_bit = sdhci_set_power(host, ios->vdd);
 		mutex_unlock(&host->ios_mutex);
 		return;
 	}
@@ -2376,7 +2403,9 @@ static void sdhci_tasklet_finish(unsigned long param)
 	mmiowb();
 	spin_unlock_irqrestore(&host->lock, flags);
 
+	spin_lock_irqsave(&host->mmc->mrq_lock, flags);
 	mmc_request_done(host->mmc, mrq);
+	spin_unlock_irqrestore(&host->mmc->mrq_lock, flags);
 	sdhci_runtime_pm_put(host);
 }
 
@@ -2440,6 +2469,7 @@ static void sdhci_tuning_timer(unsigned long data)
 
 static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 {
+	u16 auto_cmd_status;
 	BUG_ON(intmask == 0);
 
 	if (!host->cmd) {
@@ -2455,6 +2485,18 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 	else if (intmask & (SDHCI_INT_CRC | SDHCI_INT_END_BIT |
 			SDHCI_INT_INDEX))
 		host->cmd->error = -EILSEQ;
+
+	if (intmask & SDHCI_INT_AUTO_CMD_ERR) {
+		auto_cmd_status = sdhci_readw(host, SDHCI_AUTO_CMD_ERR);
+		if (auto_cmd_status & (SDHCI_AUTO_CMD12_NOT_EXEC |
+				       SDHCI_AUTO_CMD_INDEX_ERR |
+				       SDHCI_AUTO_CMD_ENDBIT_ERR))
+			host->cmd->error = -EIO;
+		else if (auto_cmd_status & SDHCI_AUTO_CMD_TIMEOUT_ERR)
+			host->cmd->error = -ETIMEDOUT;
+		else if (auto_cmd_status & SDHCI_AUTO_CMD_CRC_ERR)
+			host->cmd->error = -EILSEQ;
+	}
 
 	if (host->quirks2 & SDHCI_QUIRK2_IGNORE_CMDCRC_FOR_TUNING) {
 		if ((host->cmd->opcode == MMC_SEND_TUNING_BLOCK_HS400) ||
@@ -2982,6 +3024,7 @@ struct sdhci_host *sdhci_alloc_host(struct device *dev,
 	host->mmc = mmc;
 
 	spin_lock_init(&host->lock);
+	spin_lock_init(&mmc->mrq_lock);
 	mutex_init(&host->ios_mutex);
 
 	return host;
@@ -3024,6 +3067,13 @@ int sdhci_add_host(struct sdhci_host *host)
 
 	caps[1] = (host->version >= SDHCI_SPEC_300) ?
 		sdhci_readl(host, SDHCI_CAPABILITIES_1) : 0;
+
+	if(strcmp(host->hw_name, "msm_sdcc.2") == 0) {
+	/* Custom: An external level shifter on SDC2 */
+	caps[0] |= (SDHCI_CAN_VDD_330 | SDHCI_CAN_VDD_300 | SDHCI_CAN_VDD_180);
+	/* disable SD 3.0 feature */
+	caps[1] &= (u32) ~(SDHCI_SUPPORT_SDR50 |SDHCI_SUPPORT_SDR104 | SDHCI_SUPPORT_DDR50);	
+	}
 
 	if (host->quirks & SDHCI_QUIRK_FORCE_DMA)
 		host->flags |= SDHCI_USE_SDMA;

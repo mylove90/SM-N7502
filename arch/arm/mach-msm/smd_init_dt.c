@@ -21,7 +21,7 @@
 #include <linux/io.h>
 
 #include <mach/msm_ipc_logging.h>
-#include <smd_private.h>
+#include "smd_private.h"
 
 #define MODULE_NAME "msm_smd"
 #define IPC_LOG(level, x...) do { \
@@ -259,7 +259,7 @@ static int msm_smd_probe(struct platform_device *pdev)
 		smd_set_edge_subsys_name(edge, pilstr);
 
 	smd_set_edge_initialized(edge);
-	smd_post_init(0);
+	smd_post_init(0, remote_pid);
 	return 0;
 
 missing_key:

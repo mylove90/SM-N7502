@@ -26,7 +26,7 @@
 #include "mdss_mdp.h"
 #include "mdss_fb.h"
 #include "mdss_wb.h"
-
+#include "dlog.h"
 
 enum mdss_mdp_wb_state {
 	WB_OPEN,
@@ -410,7 +410,6 @@ static int mdss_mdp_wb_queue(struct msm_fb_data_type *mfd,
 		node = get_local_node(wb, data);
 	if (node == NULL)
 		node = get_user_node(mfd, data);
-
 	if (!node || node->state == IN_BUSY_QUEUE ||
 	    node->state == IN_FREE_QUEUE) {
 		pr_err("memory not registered or Buffer already with us\n");
@@ -493,7 +492,7 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		.callback_fnc = mdss_mdp_wb_callback,
 		.priv_data = &comp,
 	};
-
+	__DLOG__(mfd->fbi->node);
 	if (!ctl->power_on)
 		return 0;
 
@@ -524,6 +523,7 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		pr_err("unable to get writeback buf ctl=%d\n", ctl->num);
 		/* drop buffer but don't return error */
 		ret = 0;
+		mdss_mdp_ctl_notify(ctl, MDP_NOTIFY_FRAME_DONE);
 		goto kickoff_fail;
 	}
 
@@ -575,6 +575,7 @@ int mdss_mdp_wb_set_mirr_hint(struct msm_fb_data_type *mfd, int hint)
 	default:
 		return -EINVAL;
 	}
+	__DLOG__(mfd->fbi->node, hint);
 }
 
 int mdss_mdp_wb_get_format(struct msm_fb_data_type *mfd,
@@ -675,7 +676,8 @@ int mdss_mdp_wb_ioctl_handler(struct msm_fb_data_type *mfd, u32 cmd,
 		break;
 	case MSMFB_WRITEBACK_QUEUE_BUFFER:
 		if (!copy_from_user(&data, arg, sizeof(data))) {
-			ret = mdss_mdp_wb_queue(mfd, arg, false);
+			ret = mdss_mdp_wb_queue(mfd, &data, false);
+			ret = copy_to_user(arg, &data, sizeof(data));
 		} else {
 			pr_err("wb queue buf failed on copy_from_user\n");
 			ret = -EFAULT;
@@ -683,7 +685,8 @@ int mdss_mdp_wb_ioctl_handler(struct msm_fb_data_type *mfd, u32 cmd,
 		break;
 	case MSMFB_WRITEBACK_DEQUEUE_BUFFER:
 		if (!copy_from_user(&data, arg, sizeof(data))) {
-			ret = mdss_mdp_wb_dequeue(mfd, arg);
+			ret = mdss_mdp_wb_dequeue(mfd, &data);
+			ret = copy_to_user(arg, &data, sizeof(data));
 		} else {
 			pr_err("wb dequeue buf failed on copy_from_user\n");
 			ret = -EFAULT;
@@ -711,7 +714,7 @@ int msm_fb_writeback_start(struct fb_info *info)
 
 	if (!mfd)
 		return -ENODEV;
-
+	__DLOG__(info->node);
 	return mdss_mdp_wb_start(mfd);
 }
 EXPORT_SYMBOL(msm_fb_writeback_start);

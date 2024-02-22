@@ -48,12 +48,14 @@
 #include <mach/iommu_domains.h>
 #include <mach/memory.h>
 #include <mach/msm_memtypes.h>
+#include <mach/rpm-regulator-smd.h>
 
 #include "mdss.h"
 #include "mdss_fb.h"
 #include "mdss_mdp.h"
 #include "mdss_panel.h"
 #include "mdss_debug.h"
+#include "dlog.h"
 
 struct mdss_data_type *mdss_res;
 
@@ -191,7 +193,7 @@ static irqreturn_t mdss_irq_handler(int irq, void *ptr)
 		return IRQ_NONE;
 
 	mdata->irq_buzy = true;
-
+	__DLOG__(intr);
 	if (intr & MDSS_INTR_MDP) {
 		spin_lock(&mdp_lock);
 		mdss_irq_dispatch(MDSS_HW_MDP, irq, ptr);
@@ -355,7 +357,8 @@ static void mdss_mdp_bus_scale_unregister(struct mdss_data_type *mdata)
 	if (mdata->bus_hdl)
 		msm_bus_scale_unregister_client(mdata->bus_hdl);
 }
-
+unsigned long clk_rate_dbg;
+u64 bus_ab_quota_dbg, bus_ib_quota_dbg;
 int mdss_mdp_bus_scale_set_quota(u64 ab_quota, u64 ib_quota)
 {
 	int bus_idx;
@@ -386,7 +389,8 @@ int mdss_mdp_bus_scale_set_quota(u64 ab_quota, u64 ib_quota)
 		vect = mdp_bus_scale_table.usecase[bus_idx].vectors;
 		vect->ab = ab_quota;
 		vect->ib = ib_quota;
-
+		bus_ab_quota_dbg = ab_quota;
+		bus_ib_quota_dbg = ib_quota;
 		pr_debug("bus scale idx=%d ab=%llu ib=%llu\n", bus_idx,
 				vect->ab, vect->ib);
 	}
@@ -584,6 +588,7 @@ void mdss_mdp_set_clk_rate(unsigned long rate)
 		if (IS_ERR_VALUE(clk_rate)) {
 			pr_err("unable to round rate err=%ld\n", clk_rate);
 		} else if (clk_rate != clk_get_rate(clk)) {
+			clk_rate_dbg = clk_rate;
 			if (IS_ERR_VALUE(clk_set_rate(clk, clk_rate)))
 				pr_err("clk_set_rate failed\n");
 			else
@@ -699,6 +704,14 @@ static int mdss_mdp_irq_clk_setup(struct mdss_data_type *mdata)
 		return -EINVAL;
 	}
 	mdata->fs_ena = false;
+
+	mdata->vdd_cx = devm_regulator_get(&mdata->pdev->dev,
+				"vdd-cx");
+	if (IS_ERR_OR_NULL(mdata->vdd_cx)) {
+		pr_debug("unable to get CX reg. rc=%d\n",
+					PTR_RET(mdata->vdd_cx));
+		mdata->vdd_cx = NULL;
+	}
 
 	if (mdss_mdp_irq_clk_register(mdata, "bus_clk", MDSS_CLK_AXI) ||
 	    mdss_mdp_irq_clk_register(mdata, "iface_clk", MDSS_CLK_AHB) ||
@@ -816,9 +829,74 @@ int mdss_iommu_init(struct mdss_data_type *mdata)
 	return 0;
 }
 
+static int mdss_debug_stat_ctl_dump(struct mdss_mdp_ctl *ctl,
+		char *bp, int len)
+{
+	int total = 0;
+
+	if (!ctl->ref_cnt)
+		return 0;
+
+	if (ctl->intf_num) {
+		total = scnprintf(bp, len,
+			"intf%d: play: %08u \tvsync: %08u \tunderrun: %08u\n",
+				ctl->intf_num, ctl->play_cnt,
+				ctl->vsync_cnt, ctl->underrun_cnt);
+	} else {
+		total = scnprintf(bp, len, "wb: \tmode=%x \tplay: %08u\n",
+				ctl->opmode, ctl->play_cnt);
+	}
+
+	return total;
+}
+
+static int mdss_debug_dump_stats(void *data, char *buf, int len)
+{
+	struct mdss_data_type *mdata = data;
+	struct mdss_mdp_pipe *pipe;
+	int i, total = 0;
+
+	for (i = 0; i < mdata->nctl; i++)
+		total += mdss_debug_stat_ctl_dump(mdata->ctl_off + i, buf, len);
+
+	total += scnprintf(buf + total, len - total, "\n");
+
+	for (i = 0; i < mdata->nvig_pipes; i++) {
+		pipe = mdata->vig_pipes + i;
+		total += scnprintf(buf + total, len - total,
+			"VIG%d :   %08u\t", i, pipe->play_cnt);
+	}
+	total += scnprintf(buf + total, len - total, "\n");
+
+	for (i = 0; i < mdata->nrgb_pipes; i++) {
+		pipe = mdata->rgb_pipes + i;
+		total += scnprintf(buf + total, len - total,
+			"RGB%d :   %08u\t", i, pipe->play_cnt);
+	}
+	total += scnprintf(buf + total, len - total, "\n");
+
+	for (i = 0; i < mdata->ndma_pipes; i++) {
+		pipe = mdata->dma_pipes + i;
+		total += scnprintf(buf + total, len - total,
+			"DMA%d :   %08u\t", i, pipe->play_cnt);
+	}
+	return total;
+}
+
+static void mdss_debug_enable_clock(int on)
+{
+	if (on)
+		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
+	else
+		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
+}
+
 static int mdss_mdp_debug_init(struct mdss_data_type *mdata)
 {
 	int rc;
+
+	mdata->debug_inf.debug_dump_stats = mdss_debug_dump_stats;
+	mdata->debug_inf.debug_enable_clock = mdss_debug_enable_clock;
 
 	rc = mdss_debugfs_init(mdata);
 	if (rc)
@@ -838,6 +916,10 @@ int mdss_hw_init(struct mdss_data_type *mdata)
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
 	mdata->mdp_rev = MDSS_MDP_REG_READ(MDSS_MDP_REG_HW_VERSION);
 	pr_info_once("MDP Rev=%x\n", mdata->mdp_rev);
+
+	/* disable hw underrun recovery */
+	writel_relaxed(0x0, mdata->mdp_base +
+			MDSS_MDP_REG_VIDEO_INTF_UNDERFLOW_CTL);
 
 	if (mdata->hw_settings) {
 		struct mdss_hw_settings *hws = mdata->hw_settings;
@@ -1036,8 +1118,8 @@ static int mdss_mdp_probe(struct platform_device *pdev)
 probe_done:
 	if (IS_ERR_VALUE(rc)) {
 		mdss_mdp_hw.ptr = NULL;
-		mdss_res = NULL;
 		mdss_mdp_pp_term(&pdev->dev);
+		mdss_res = NULL;
 	}
 
 	return rc;
@@ -1693,7 +1775,8 @@ static int mdss_mdp_parse_dt_smp(struct platform_device *pdev)
 	struct mdss_data_type *mdata = platform_get_drvdata(pdev);
 	u32 num;
 	u32 data[2];
-	int rc;
+	int rc, len;
+	const u32 *arr;
 
 	num = mdss_mdp_parse_dt_prop_len(pdev, "qcom,mdss-smp-data");
 
@@ -1715,7 +1798,49 @@ static int mdss_mdp_parse_dt_smp(struct platform_device *pdev)
 		"qcom,mdss-smp-mb-per-pipe", data);
 	mdata->smp_mb_per_pipe = (!rc ? data[0] : 0);
 
-	return 0;
+	rc = 0;
+	arr = of_get_property(pdev->dev.of_node,
+		"qcom,mdss-pipe-rgb-fixed-mmb", &len);
+	if (arr) {
+		int i, j, k;
+		u32 cnt, mmb;
+
+		len /= sizeof(u32);
+		for (i = 0, k = 0; i < len; k++) {
+			struct mdss_mdp_pipe *pipe = NULL;
+
+			if (k >= mdata->nrgb_pipes) {
+				pr_err("invalid fixed mmbs for rgb pipes\n");
+				return -EINVAL;
+			}
+
+			pipe = &mdata->rgb_pipes[k];
+
+			cnt = be32_to_cpu(arr[i++]);
+			if (cnt == 0)
+				continue;
+
+			for (j = 0; j < cnt; j++) {
+				mmb = be32_to_cpu(arr[i++]);
+				if (mmb > mdata->smp_mb_cnt) {
+					pr_err("overflow mmb%d: rgb%d: max%d\n",
+						mmb, k, mdata->smp_mb_cnt);
+					return -EINVAL;
+				}
+				/* rgb pipes fetches only single plane */
+				set_bit(mmb, pipe->smp_map[0].fixed);
+			}
+			if (bitmap_intersects(pipe->smp_map[0].fixed,
+				mdata->mmb_alloc_map, mdata->smp_mb_cnt)) {
+				pr_err("overlapping fixed mmb map\n");
+				return -EINVAL;
+			}
+			bitmap_or(mdata->mmb_alloc_map, pipe->smp_map[0].fixed,
+				mdata->mmb_alloc_map, mdata->smp_mb_cnt);
+		}
+	}
+
+	return rc;
 }
 
 static int mdss_mdp_parse_dt_misc(struct platform_device *pdev)
@@ -1723,7 +1848,6 @@ static int mdss_mdp_parse_dt_misc(struct platform_device *pdev)
 	struct mdss_data_type *mdata = platform_get_drvdata(pdev);
 	u32 data;
 	int rc;
-	struct property *prop = NULL;
 
 	rc = of_property_read_u32(pdev->dev.of_node, "qcom,mdss-rot-block-size",
 		&data);
@@ -1735,9 +1859,6 @@ static int mdss_mdp_parse_dt_misc(struct platform_device *pdev)
 		"qcom,mdss-has-decimation");
 	mdata->has_wfd_blk = of_property_read_bool(pdev->dev.of_node,
 		"qcom,mdss-has-wfd-blk");
-	prop = of_find_property(pdev->dev.of_node, "batfet-supply", NULL);
-	mdata->batfet_required = prop ? true : false;
-
 	return 0;
 }
 
@@ -1755,6 +1876,9 @@ static int mdss_mdp_parse_dt_ad_cfg(struct platform_device *pdev)
 	}
 	if (mdata->nad_cfgs > mdata->nmixers_intf)
 		return -EINVAL;
+
+	mdata->has_wb_ad = of_property_read_bool(pdev->dev.of_node,
+		"qcom,mdss-has-wb-ad");
 
 	ad_offsets = kzalloc(sizeof(u32) * mdata->nad_cfgs, GFP_KERNEL);
 	if (!ad_offsets) {
@@ -1813,33 +1937,6 @@ struct mdss_data_type *mdss_mdp_get_mdata(void)
 	return mdss_res;
 }
 
-void mdss_mdp_batfet_ctrl(struct mdss_data_type *mdata, int enable)
-{
-	if (!mdata->batfet_required)
-		return;
-
-	if (!mdata->batfet) {
-		if (enable) {
-			mdata->batfet = devm_regulator_get(&mdata->pdev->dev,
-				"batfet");
-			if (IS_ERR_OR_NULL(mdata->batfet)) {
-				pr_debug("unable to get batfet reg. rc=%d\n",
-					PTR_RET(mdata->batfet));
-				mdata->batfet = NULL;
-				return;
-			}
-		} else {
-			pr_debug("Batfet regulator disable w/o enable\n");
-			return;
-		}
-	}
-
-	if (enable)
-		regulator_enable(mdata->batfet);
-	else
-		regulator_disable(mdata->batfet);
-}
-
 /**
  * mdss_is_ready() - checks if mdss is probed and ready
  *
@@ -1890,6 +1987,49 @@ int mdss_panel_get_boot_cfg(void)
 	return rc;
 }
 
+static int mdss_mdp_cx_ctrl(struct mdss_data_type *mdata, int enable)
+{
+	int rc = 0;
+
+	if (!mdata->vdd_cx)
+		return rc;
+
+	if (enable) {
+		rc = regulator_set_voltage(
+				mdata->vdd_cx,
+				RPM_REGULATOR_CORNER_SVS_SOC,
+				RPM_REGULATOR_CORNER_SUPER_TURBO);
+		if (rc < 0)
+			goto vreg_set_voltage_fail;
+
+		pr_debug("Enabling CX power rail\n");
+		rc = regulator_enable(mdata->vdd_cx);
+		if (rc) {
+			pr_err("Failed to enable regulator.\n");
+			return rc;
+		}
+	} else {
+		pr_debug("Disabling CX power rail\n");
+		rc = regulator_disable(mdata->vdd_cx);
+		if (rc) {
+			pr_err("Failed to disable regulator.\n");
+			return rc;
+		}
+		rc = regulator_set_voltage(
+				mdata->vdd_cx,
+				RPM_REGULATOR_CORNER_NONE,
+				RPM_REGULATOR_CORNER_SUPER_TURBO);
+		if (rc < 0)
+			goto vreg_set_voltage_fail;
+	}
+
+	return rc;
+
+vreg_set_voltage_fail:
+	pr_err("Set vltg fail\n");
+	return rc;
+}
+
 static void mdss_mdp_footswitch_ctrl(struct mdss_data_type *mdata, int on)
 {
 	if (!mdata->fs)
@@ -1899,7 +2039,7 @@ static void mdss_mdp_footswitch_ctrl(struct mdss_data_type *mdata, int on)
 		pr_debug("Enable MDP FS\n");
 		if (!mdata->fs_ena) {
 			regulator_enable(mdata->fs);
-			mdss_mdp_batfet_ctrl(mdata, true);
+			mdss_mdp_cx_ctrl(mdata, true);
 		}
 		mdata->fs_ena = true;
 	} else {
@@ -1907,7 +2047,7 @@ static void mdss_mdp_footswitch_ctrl(struct mdss_data_type *mdata, int on)
 		mdss_iommu_dettach(mdata);
 		if (mdata->fs_ena) {
 			regulator_disable(mdata->fs);
-			mdss_mdp_batfet_ctrl(mdata, false);
+			mdss_mdp_cx_ctrl(mdata, false);
 		}
 		mdata->fs_ena = false;
 	}
@@ -2092,5 +2232,9 @@ static int __init mdss_mdp_driver_init(void)
 	return 0;
 
 }
-
+void mdss_mdp_underrun_clk_info(void)
+{
+	pr_info(" mdp_clk = %ld, bus_ab = %llu, bus_ib = %llu\n",
+		clk_rate_dbg, bus_ab_quota_dbg, bus_ib_quota_dbg);
+}
 module_init(mdss_mdp_driver_init);
