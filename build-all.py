@@ -160,12 +160,12 @@ def build(target):
     elif target[0:11] == 'ms01lte_eur':
 	    base_defconfig = 'msm8926-sec_defconfig'
     else:
-    base_defconfig = 'msm8226-sec_defconfig'
+	base_defconfig = 'msm8226-sec_defconfig'
 
     if base_defconfig[0:7] == 'msm8926':
 	    variant_defconfig = 'msm8926-sec_%s_defconfig' % target
     else:
-    variant_defconfig = 'msm8226-sec_%s_defconfig' % target
+	variant_defconfig = 'msm8226-sec_%s_defconfig' % target
     
     if all_options.debug == 'eng':
     	debug_defconfig = 'msm8226_sec_eng_defconfig'
