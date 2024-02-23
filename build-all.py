@@ -107,6 +107,8 @@ def scan_configs():
         names[os.path.basename(n)[12:-10]] = n
     for n in glob.glob('arch/arm/configs/msm8226-sec_baffin23g_[c]*_defconfig'):
         names[os.path.basename(n)[12:-10]] = n     
+    for n in glob.glob('arch/arm/configs/msm8226-sec_hl3gds_*_defconfig'):
+        names[os.path.basename(n)[12:-10]] = n
     return names
 
 class Builder:
