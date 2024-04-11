@@ -45,6 +45,15 @@
 #define TAPAN_VDD_CX_OPTIMAL_UA 10000
 #define TAPAN_VDD_CX_SLEEP_UA 2000
 
+/* RX_HPH_CNP_WG_TIME increases by 0.24ms */
+#define TAPAN_WG_TIME_FACTOR_US  240
+
+#define TAPAN_SB_PGD_PORT_RX_BASE   0x40
+#define TAPAN_SB_PGD_PORT_TX_BASE   0x50
+#define TAPAN_REGISTER_START_OFFSET 0x800
+
+#define CODEC_REG_CFG_MINOR_VER 1
+
 static struct regulator *tapan_codec_find_regulator(
 	struct snd_soc_codec *codec,
 	const char *name);
@@ -89,6 +98,67 @@ MODULE_PARM_DESC(spkr_drv_wrnd,
 #define TAPAN_SLIM_IRQ_PORT_CLOSED (1 << 2)
 
 #define TAPAN_IRQ_MBHC_JACK_SWITCH 21
+
+enum tapan_codec_type {
+	WCD9306,
+	WCD9302,
+};
+
+static enum tapan_codec_type codec_ver;
+
+/*
+ * Multiplication factor to compute impedance on Tapan
+ * This is computed from (Vx / (m*Ical)) = (10mV/(180*30uA))
+ */
+#define TAPAN_ZDET_MUL_FACTOR 1852
+
+static struct afe_param_cdc_reg_cfg audio_reg_cfg[] = {
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_SB_PGD_PORT_TX_BASE),
+		SB_PGD_PORT_TX_WATERMARK_N, 0x1E, 8, 0x1
+	},
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_SB_PGD_PORT_TX_BASE),
+		SB_PGD_PORT_TX_ENABLE_N, 0x1, 8, 0x1
+	},
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_SB_PGD_PORT_RX_BASE),
+		SB_PGD_PORT_RX_WATERMARK_N, 0x1E, 8, 0x1
+	},
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_SB_PGD_PORT_RX_BASE),
+		SB_PGD_PORT_RX_ENABLE_N, 0x1, 8, 0x1
+	},
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_A_CDC_ANC1_IIR_B1_CTL),
+		AANC_FF_GAIN_ADAPTIVE, 0x4, 8, 0
+	},
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_A_CDC_ANC1_IIR_B1_CTL),
+		AANC_FFGAIN_ADAPTIVE_EN, 0x8, 8, 0
+	},
+	{
+		CODEC_REG_CFG_MINOR_VER,
+		(TAPAN_REGISTER_START_OFFSET + TAPAN_A_CDC_ANC1_GAIN_CTL),
+		AANC_GAIN_CONTROL, 0xFF, 8, 0
+	},
+};
+
+static struct afe_param_cdc_reg_cfg_data tapan_audio_reg_cfg = {
+	.num_registers = ARRAY_SIZE(audio_reg_cfg),
+	.reg_data = audio_reg_cfg,
+};
+
+static struct afe_param_id_cdc_aanc_version tapan_cdc_aanc_version = {
+	.cdc_aanc_minor_version = AFE_API_VERSION_CDC_AANC_VERSION,
+	.aanc_hw_version        = AANC_HW_BLOCK_VERSION_2,
+};
 
 enum {
 	AIF1_PB = 0,
@@ -234,6 +304,8 @@ struct tapan_priv {
 
 	bool spkr_pa_widget_on;
 
+	struct afe_param_cdc_slimbus_slave_cfg slimbus_slave_cfg;
+
 	/* resmgr module */
 	struct wcd9xxx_resmgr resmgr;
 	/* mbhc module */
@@ -242,8 +314,21 @@ struct tapan_priv {
 	/* class h specific data */
 	struct wcd9xxx_clsh_cdc_data clsh_d;
 
+	int ldo_h_count;
+	int (*mclk_cb_fn) (struct snd_soc_codec*, int, bool);
+	int micb_2_ref_cnt;
+
 	/* pointers to regulators required for chargepump */
 	struct regulator *cp_regulators[CP_REG_MAX];
+
+	/*
+	 * list used to save/restore registers at start and
+	 * end of impedance measurement
+	 */
+	struct list_head reg_save_restore;
+
+	int (*machine_codec_event_cb)(struct snd_soc_codec *codec,
+					enum wcd9xxx_codec_event);
 };
 
 static const u32 comp_shift[] = {
@@ -982,6 +1067,25 @@ static const struct soc_enum class_h_dsm_enum =
 static const struct snd_kcontrol_new class_h_dsm_mux =
 	SOC_DAPM_ENUM("CLASS_H_DSM MUX Mux", class_h_dsm_enum);
 
+static int tapan_hph_impedance_get(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	uint32_t zl, zr;
+	bool hphr;
+	struct soc_multi_mixer_control *mc;
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct tapan_priv *priv = snd_soc_codec_get_drvdata(codec);
+
+	mc = (struct soc_multi_mixer_control *)(kcontrol->private_value);
+
+	hphr = mc->shift;
+	wcd9xxx_mbhc_get_impedance(&priv->mbhc, &zl, &zr);
+	pr_debug("%s: zl %u, zr %u\n", __func__, zl, zr);
+	ucontrol->value.integer.value[0] = hphr ? zr : zl;
+
+	return 0;
+}
+
 static const struct snd_kcontrol_new tapan_common_snd_controls[] = {
 
 	SOC_ENUM_EXT("EAR PA Gain", tapan_ear_pa_gain_enum[0],
@@ -1084,6 +1188,11 @@ static const struct snd_kcontrol_new tapan_common_snd_controls[] = {
 	tapan_get_iir_band_audio_mixer, tapan_put_iir_band_audio_mixer),
 	SOC_SINGLE_MULTI_EXT("IIR2 Band5", IIR2, BAND5, 255, 0, 5,
 	tapan_get_iir_band_audio_mixer, tapan_put_iir_band_audio_mixer),
+
+	SOC_SINGLE_EXT("HPHL Impedance", 0, 0, UINT_MAX, 0,
+		       tapan_hph_impedance_get, NULL),
+	SOC_SINGLE_EXT("HPHR Impedance", 0, 1, UINT_MAX, 0,
+		       tapan_hph_impedance_get, NULL),
 };
 
 static const struct snd_kcontrol_new tapan_9306_snd_controls[] = {
@@ -1220,6 +1329,9 @@ static const struct soc_enum rx4_mix1_inp1_chain_enum =
 static const struct soc_enum rx4_mix1_inp2_chain_enum =
 	SOC_ENUM_SINGLE(TAPAN_A_CDC_CONN_RX4_B1_CTL, 4, 13, rx_3_4_mix1_text);
 
+static const struct soc_enum rx4_mix1_inp3_chain_enum =
+	SOC_ENUM_SINGLE(TAPAN_A_CDC_CONN_RX4_B2_CTL, 0, 13, rx_3_4_mix1_text);
+
 static const struct soc_enum rx1_mix2_inp1_chain_enum =
 	SOC_ENUM_SINGLE(TAPAN_A_CDC_CONN_RX1_B3_CTL, 0, 5, rx_mix2_text);
 
@@ -1314,6 +1426,9 @@ static const struct snd_kcontrol_new rx4_mix1_inp1_mux =
 
 static const struct snd_kcontrol_new rx4_mix1_inp2_mux =
 	SOC_DAPM_ENUM("RX4 MIX1 INP2 Mux", rx4_mix1_inp2_chain_enum);
+
+static const struct snd_kcontrol_new rx4_mix1_inp3_mux =
+	SOC_DAPM_ENUM("RX4 MIX1 INP3 Mux", rx4_mix1_inp3_chain_enum);
 
 static const struct snd_kcontrol_new rx1_mix2_inp1_mux =
 	SOC_DAPM_ENUM("RX1 MIX2 INP1 Mux", rx1_mix2_inp1_chain_enum);
@@ -2034,30 +2149,33 @@ static int tapan_codec_enable_micbias(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_codec *codec = w->codec;
 	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
-	u16 micb_int_reg;
+	u16 micb_int_reg, micb_ctl_reg;
 	u8 cfilt_sel_val = 0;
 	char *internal1_text = "Internal1";
 	char *internal2_text = "Internal2";
 	char *internal3_text = "Internal3";
 	enum wcd9xxx_notify_event e_post_off, e_pre_on, e_post_on;
 
-	dev_dbg(codec->dev, "%s %d\n", __func__, event);
-	switch (w->reg) {
-	case TAPAN_A_MICB_1_CTL:
+	dev_dbg(codec->dev, "%s %d, shift = %d\n", __func__, event, w->shift);
+	switch (w->shift) {
+	case 1:
+		micb_ctl_reg = TAPAN_A_MICB_1_CTL;
 		micb_int_reg = TAPAN_A_MICB_1_INT_RBIAS;
 		cfilt_sel_val = tapan->resmgr.pdata->micbias.bias1_cfilt_sel;
 		e_pre_on = WCD9XXX_EVENT_PRE_MICBIAS_1_ON;
 		e_post_on = WCD9XXX_EVENT_POST_MICBIAS_1_ON;
 		e_post_off = WCD9XXX_EVENT_POST_MICBIAS_1_OFF;
 		break;
-	case TAPAN_A_MICB_2_CTL:
+	case 2:
+		micb_ctl_reg = TAPAN_A_MICB_2_CTL;
 		micb_int_reg = TAPAN_A_MICB_2_INT_RBIAS;
 		cfilt_sel_val = tapan->resmgr.pdata->micbias.bias2_cfilt_sel;
 		e_pre_on = WCD9XXX_EVENT_PRE_MICBIAS_2_ON;
 		e_post_on = WCD9XXX_EVENT_POST_MICBIAS_2_ON;
 		e_post_off = WCD9XXX_EVENT_POST_MICBIAS_2_OFF;
 		break;
-	case TAPAN_A_MICB_3_CTL:
+	case 3:
+		micb_ctl_reg = TAPAN_A_MICB_3_CTL;
 		micb_int_reg = TAPAN_A_MICB_3_INT_RBIAS;
 		cfilt_sel_val = tapan->resmgr.pdata->micbias.bias3_cfilt_sel;
 		e_pre_on = WCD9XXX_EVENT_PRE_MICBIAS_3_ON;
@@ -2086,11 +2204,33 @@ static int tapan_codec_enable_micbias(struct snd_soc_dapm_widget *w,
 
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		usleep_range(20000, 20000);
+		if (w->shift ==2) {
+			if (++tapan->micb_2_ref_cnt == 1) {
+				snd_soc_update_bits(codec, micb_ctl_reg, 0x80, 0x80);
+				usleep_range(20000, 20000);
+			} else {
+				dev_dbg(codec->dev, "MIC BIAS2 already enabled, ref_count = %d",
+						tapan->micb_2_ref_cnt);
+			}
+		} else {
+			snd_soc_update_bits(codec, micb_ctl_reg, 0x80, 0x80);
+			usleep_range(20000, 20000);
+		}
 		/* Let MBHC module know so micbias is on */
 		wcd9xxx_resmgr_notifier_call(&tapan->resmgr, e_post_on);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+		if (w->shift ==2) {
+			if (--tapan->micb_2_ref_cnt <= 0) {
+				snd_soc_update_bits(codec, micb_ctl_reg, 0x80, 0x00);
+				tapan->micb_2_ref_cnt = 0;
+				dev_dbg(codec->dev, "MIC BIAS2 disabled\n");
+			} else {
+				dev_dbg(codec->dev, "micbias2 is still needed, do not turn off\n");
+			}
+		} else {
+				snd_soc_update_bits(codec, micb_ctl_reg, 0x80, 0x00);
+		}
 		/* Let MBHC module know so micbias switch to be off */
 		wcd9xxx_resmgr_notifier_call(&tapan->resmgr, e_post_off);
 
@@ -2323,12 +2463,103 @@ static int tapan_codec_enable_interpolator(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+void tapan_register_mclk_cb(struct snd_soc_codec *codec,
+	int (*mclk_cb_fn) (struct snd_soc_codec*, int, bool))
+{
+	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
+	tapan->mclk_cb_fn = mclk_cb_fn;
+}
+
+static void tapan_enable_ldo_h(struct snd_soc_codec *codec, u32 enable)
+{
+	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
+
+	if (enable) {
+		if (++tapan->ldo_h_count == 1)
+			snd_soc_update_bits(codec, TAPAN_A_LDO_H_MODE_1,
+				0x80, 0x80);
+	} else {
+		if (--tapan->ldo_h_count <= 0) {
+			snd_soc_update_bits(codec, TAPAN_A_LDO_H_MODE_1,
+				0x80, 0x00);
+			tapan->ldo_h_count = 0;
+		}
+	}
+}
+static int tapan_codec_enable_micbias_power(struct snd_soc_dapm_widget *w,
+		struct snd_kcontrol *kcontrol,
+		int event)
+{
+	struct snd_soc_codec *codec = w->codec;
+	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
+
+	pr_debug("%s %d\n", __func__, event);
+
+	if (!tapan->mclk_cb_fn) {
+		pr_err("%s: Callback to enable mclk is not registered\n",
+			   __func__);
+		return -EINVAL;
+	}
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		tapan->mclk_cb_fn(codec, 1, true);
+		WCD9XXX_BCL_LOCK(&tapan->resmgr);
+		wcd9xxx_resmgr_get_bandgap(&tapan->resmgr,
+					   WCD9XXX_BANDGAP_AUDIO_MODE);
+		WCD9XXX_BCL_UNLOCK(&tapan->resmgr);
+		tapan_enable_ldo_h(codec, 1);
+		tapan_codec_enable_micbias(w, kcontrol, event);
+		break;
+	case SND_SOC_DAPM_POST_PMU:
+		tapan_codec_enable_micbias(w, kcontrol, event);
+		tapan->mclk_cb_fn(codec, 0, true);
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		tapan_codec_enable_micbias(w, kcontrol, event);
+		tapan_enable_ldo_h(codec, 0);
+		WCD9XXX_BCL_LOCK(&tapan->resmgr);
+		wcd9xxx_resmgr_put_bandgap(&tapan->resmgr,
+					   WCD9XXX_BANDGAP_AUDIO_MODE);
+		WCD9XXX_BCL_UNLOCK(&tapan->resmgr);
+		break;
+	}
+	return 0;
+}
+
+/*
+int tapan_enable_micbias2(struct snd_soc_codec *codec,
+		bool enable)
+{
+	int ret = 0;
+
+	if (enable) {
+		ret = snd_soc_dapm_force_enable_pin(&codec->dapm,
+			"MIC BIAS2 Power External");
+		snd_soc_dapm_sync(&codec->dapm);
+		pr_debug("%s: Turning on MICBIAS2 ret=%d\n", __func__, ret);
+	} else {
+		ret = snd_soc_dapm_disable_pin(&codec->dapm,
+			"MIC BIAS2 Power External");
+		snd_soc_dapm_sync(&codec->dapm);
+		pr_debug("%s: Turning off MICBIAS2 ret=%d\n", __func__, ret);
+	}
+
+	return ret;
+}
+*/
+
 static int tapan_codec_enable_ldo_h(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
+	struct snd_soc_codec *codec = w->codec;
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
+		tapan_enable_ldo_h(codec, 1);
+		usleep_range(1000, 1000);
+		break;
 	case SND_SOC_DAPM_POST_PMD:
+		tapan_enable_ldo_h(codec, 0);
 		usleep_range(1000, 1000);
 		break;
 	}
@@ -2371,6 +2602,7 @@ static int tapan_hphl_dac_event(struct snd_soc_dapm_widget *w,
 						 WCD9XXX_CLSH_STATE_HPHL,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_PRE_DAC);
+		wcd9xxx_clsh_imped_config(codec, 0);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		snd_soc_update_bits(codec, TAPAN_A_CDC_CLK_RDAC_CLK_EN_CTL,
@@ -2629,6 +2861,12 @@ static const struct snd_soc_dapm_route wcd9306_map[] = {
 	{"RX4 MIX1 INP2", "IIR1", "IIR1"},
 	{"RX4 MIX2 INP1", "IIR1", "IIR1"},
 	{"RX4 MIX2 INP2", "IIR1", "IIR1"},
+	{"RX4 MIX1 INP3", "RX1", "SLIM RX1"},
+	{"RX4 MIX1 INP3", "RX2", "SLIM RX2"},
+	{"RX4 MIX1 INP3", "RX3", "SLIM RX3"},
+	{"RX4 MIX1 INP3", "RX5", "SLIM RX5"},
+	{"RX4 MIX1 INP3", "RX4", "SLIM RX4"},
+	{"RX4 MIX1 INP3", "IIR1", "IIR1"},
 
 	{"DEC1 MUX", "DMIC3", "DMIC3"},
 	{"DEC1 MUX", "DMIC4", "DMIC4"},
@@ -2942,6 +3180,9 @@ static bool tapan_is_digital_gain_register(unsigned int reg)
 
 static int tapan_volatile(struct snd_soc_codec *ssc, unsigned int reg)
 {
+
+	int i = 0;
+
 	/* Registers lower than 0x100 are top level registers which can be
 	 * written by the Tapan core driver.
 	 */
@@ -2974,6 +3215,11 @@ static int tapan_volatile(struct snd_soc_codec *ssc, unsigned int reg)
 
 	if (reg == TAPAN_A_MBHC_INSERT_DET_STATUS)
 		return 1;
+
+	for (i = 0; i < ARRAY_SIZE(audio_reg_cfg); i++)
+		if (audio_reg_cfg[i].reg_logical_addr -
+			TAPAN_REGISTER_START_OFFSET == reg)
+			return 1;
 
 	return 0;
 }
@@ -4028,7 +4274,7 @@ static const struct snd_soc_dapm_widget tapan_9306_dapm_widgets[] = {
 	SND_SOC_DAPM_MUX("RX4 MIX1 INP2", SND_SOC_NOPM, 0, 0,
 		&rx4_mix1_inp2_mux),
 	SND_SOC_DAPM_MUX("RX4 MIX1 INP3", SND_SOC_NOPM, 0, 0,
-		&rx4_mix1_inp2_mux),
+		&rx4_mix1_inp3_mux),
 
 	/* RX4 MIX2 mux inputs */
 	SND_SOC_DAPM_MUX("RX4 MIX2 INP1", SND_SOC_NOPM, 0, 0,
@@ -4085,13 +4331,13 @@ static const struct snd_soc_dapm_widget tapan_9306_dapm_widgets[] = {
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_MUX("ANC1 FB MUX", SND_SOC_NOPM, 0, 0, &anc1_fb_mux),
 
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS3 External", TAPAN_A_MICB_3_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS3 External", SND_SOC_NOPM, 3, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS3 Internal1", TAPAN_A_MICB_3_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS3 Internal1", SND_SOC_NOPM, 3, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS3 Internal2", TAPAN_A_MICB_3_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS3 Internal2", SND_SOC_NOPM, 3, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 
@@ -4314,19 +4560,26 @@ static const struct snd_soc_dapm_widget tapan_common_dapm_widgets[] = {
 		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
 		SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD),
 
-	SND_SOC_DAPM_SUPPLY("LDO_H", TAPAN_A_LDO_H_MODE_1, 7, 0,
-		tapan_codec_enable_ldo_h, SND_SOC_DAPM_POST_PMU),
+	SND_SOC_DAPM_SUPPLY("LDO_H", SND_SOC_NOPM, 0, 0,
+		tapan_codec_enable_ldo_h, SND_SOC_DAPM_POST_PMU |
+		SND_SOC_DAPM_POST_PMD),
 
 	SND_SOC_DAPM_INPUT("AMIC1"),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS1 External", TAPAN_A_MICB_1_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS1 External", SND_SOC_NOPM, 1, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS1 Internal1", TAPAN_A_MICB_1_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS1 Internal1", SND_SOC_NOPM, 1, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS1 Internal2", TAPAN_A_MICB_1_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS1 Internal2", SND_SOC_NOPM, 1, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Power External",
+		SND_SOC_NOPM, 2, 0,
+		tapan_codec_enable_micbias_power,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
+		SND_SOC_DAPM_POST_PMD),
 
 	SND_SOC_DAPM_ADC_E("ADC1", NULL, TAPAN_A_TX_1_EN, 7, 0,
 		tapan_codec_enable_adc, SND_SOC_DAPM_PRE_PMU |
@@ -4346,16 +4599,16 @@ static const struct snd_soc_dapm_widget tapan_common_dapm_widgets[] = {
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 
 	SND_SOC_DAPM_INPUT("AMIC2"),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 External", TAPAN_A_MICB_2_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 External", SND_SOC_NOPM, 2, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU |	SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Internal1", TAPAN_A_MICB_2_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Internal1", SND_SOC_NOPM, 2, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Internal2", TAPAN_A_MICB_2_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Internal2", SND_SOC_NOPM, 2, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Internal3", TAPAN_A_MICB_2_CTL, 7, 0,
+	SND_SOC_DAPM_MICBIAS_E("MIC BIAS2 Internal3", SND_SOC_NOPM, 2, 0,
 		tapan_codec_enable_micbias, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 
@@ -4482,9 +4735,9 @@ static int tapan_handle_pdata(struct tapan_priv *tapan)
 	struct snd_soc_codec *codec = tapan->codec;
 	struct wcd9xxx_pdata *pdata = tapan->resmgr.pdata;
 	int k1, k2, k3, rc = 0;
-	u8 txfe_bypass = pdata->amic_settings.txfe_enable;
-	u8 txfe_buff = pdata->amic_settings.txfe_buff;
-	u8 flag = pdata->amic_settings.use_pdata;
+	u8 txfe_bypass = 0;
+	u8 txfe_buff = 0;
+	u8 flag = 0;
 	u8 i = 0, j = 0;
 	u8 val_txfe = 0, value = 0;
 
@@ -4493,6 +4746,10 @@ static int tapan_handle_pdata(struct tapan_priv *tapan)
 		rc = -ENODEV;
 		goto done;
 	}
+
+	txfe_bypass = pdata->amic_settings.txfe_enable;
+	txfe_buff = pdata->amic_settings.txfe_buff;
+	flag = pdata->amic_settings.use_pdata;
 
 	/* Make sure settings are correct */
 	if ((pdata->micbias.ldoh_v > WCD9XXX_LDOH_3P0_V) ||
@@ -4638,7 +4895,7 @@ static const struct tapan_reg_mask_val tapan_reg_defaults[] = {
 	/*Reduce EAR DAC bias to 70% */
 	TAPAN_REG_VAL(TAPAN_A_RX_EAR_BIAS_PA, 0x76),
 	/* Reduce LINE DAC bias to 70% */
-	TAPAN_REG_VAL(TAPAN_A_RX_LINE_BIAS_PA, 0x78),
+	TAPAN_REG_VAL(TAPAN_A_RX_LINE_BIAS_PA, 0x7A),
 
 	/*
 	 * There is a diode to pull down the micbias while doing
@@ -4800,6 +5057,46 @@ static const struct tapan_reg_mask_val tapan_codec_reg_init_val[] = {
 	{TAPAN_A_RX_HPH_CHOP_CTL, 0xFF, 0x24},
 };
 
+void *tapan_get_afe_config(struct snd_soc_codec *codec,
+			   enum afe_config_type config_type)
+{
+	struct tapan_priv *priv = snd_soc_codec_get_drvdata(codec);
+
+	switch (config_type) {
+	case AFE_SLIMBUS_SLAVE_CONFIG:
+		return &priv->slimbus_slave_cfg;
+	case AFE_CDC_REGISTERS_CONFIG:
+		return &tapan_audio_reg_cfg;
+	case AFE_AANC_VERSION:
+		return &tapan_cdc_aanc_version;
+	default:
+		pr_err("%s: Unknown config_type 0x%x\n", __func__, config_type);
+		return NULL;
+	}
+}
+
+static void tapan_init_slim_slave_cfg(struct snd_soc_codec *codec)
+{
+	struct tapan_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct afe_param_cdc_slimbus_slave_cfg *cfg;
+	struct wcd9xxx *wcd9xxx = codec->control_data;
+	uint64_t eaddr = 0;
+
+	pr_debug("%s\n", __func__);
+	cfg = &priv->slimbus_slave_cfg;
+	cfg->minor_version = 1;
+	cfg->tx_slave_port_offset = 0;
+	cfg->rx_slave_port_offset = 16;
+
+	memcpy(&eaddr, &wcd9xxx->slim->e_addr, sizeof(wcd9xxx->slim->e_addr));
+	/* e-addr is 6-byte elemental address of the device */
+	WARN_ON(sizeof(wcd9xxx->slim->e_addr) != 6);
+	cfg->device_enum_addr_lsw = eaddr & 0xFFFFFFFF;
+	cfg->device_enum_addr_msw = eaddr >> 32;
+
+	pr_debug("%s: slimbus logical address 0x%llx\n", __func__, eaddr);
+}
+
 static void tapan_codec_init_reg(struct snd_soc_codec *codec)
 {
 	u32 i;
@@ -4910,6 +5207,255 @@ enum wcd9xxx_cdc_type tapan_get_cdc_type(void)
 	return WCD9XXX_CDC_TYPE_TAPAN;
 }
 
+static void wcd9xxx_prepare_hph_pa(struct wcd9xxx_mbhc *mbhc,
+				   struct list_head *lh)
+{
+	int i;
+	struct snd_soc_codec *codec = mbhc->codec;
+	u32 delay;
+
+	const struct wcd9xxx_reg_mask_val reg_set_paon[] = {
+		{WCD9XXX_A_CDC_CLSH_B1_CTL, 0x0F, 0x00},
+		{WCD9XXX_A_RX_HPH_CHOP_CTL, 0xFF, 0xA4},
+		{WCD9XXX_A_RX_HPH_OCP_CTL, 0xFF, 0x67},
+		{WCD9XXX_A_RX_HPH_L_TEST, 0x1, 0x0},
+		{WCD9XXX_A_RX_HPH_R_TEST, 0x1, 0x0},
+		{WCD9XXX_A_RX_HPH_BIAS_WG_OCP, 0xFF, 0x1A},
+		{WCD9XXX_A_RX_HPH_CNP_WG_CTL, 0xFF, 0xDB},
+		{WCD9XXX_A_RX_HPH_CNP_WG_TIME, 0xFF, 0x2A},
+		{TAPAN_A_CDC_CONN_RX2_B2_CTL, 0xFF, 0x10},
+		{WCD9XXX_A_CDC_CLK_OTHR_CTL, 0xFF, 0x05},
+		{WCD9XXX_A_CDC_RX1_B6_CTL, 0xFF, 0x81},
+		{WCD9XXX_A_CDC_CLK_RX_B1_CTL, 0x03, 0x03},
+		{WCD9XXX_A_RX_HPH_L_GAIN, 0xFF, 0x2C},
+		{WCD9XXX_A_CDC_RX2_B6_CTL, 0xFF, 0x81},
+		{WCD9XXX_A_RX_HPH_R_GAIN, 0xFF, 0x2C},
+		{WCD9XXX_A_BUCK_CTRL_CCL_4, 0xFF, 0x50},
+		{WCD9XXX_A_BUCK_CTRL_VCL_1, 0xFF, 0x08},
+		{WCD9XXX_A_BUCK_CTRL_CCL_1, 0xFF, 0x5B},
+		{WCD9XXX_A_NCP_CLK, 0xFF, 0x9C},
+		{WCD9XXX_A_NCP_CLK, 0xFF, 0xFC},
+		{WCD9XXX_A_BUCK_MODE_3, 0xFF, 0xCE},
+		{WCD9XXX_A_BUCK_CTRL_CCL_3, 0xFF, 0x6B},
+		{WCD9XXX_A_BUCK_CTRL_CCL_3, 0xFF, 0x6F},
+		{TAPAN_A_RX_BUCK_BIAS1, 0xFF, 0x62},
+		{TAPAN_A_RX_HPH_BIAS_PA, 0xFF, 0x7A},
+		{TAPAN_A_CDC_CLK_RDAC_CLK_EN_CTL, 0xFF, 0x02},
+		{TAPAN_A_CDC_CLK_RDAC_CLK_EN_CTL, 0xFF, 0x06},
+		{WCD9XXX_A_RX_COM_BIAS, 0xFF, 0x80},
+		{WCD9XXX_A_BUCK_MODE_3, 0xFF, 0xC6},
+		{WCD9XXX_A_BUCK_MODE_4, 0xFF, 0xE6},
+		{WCD9XXX_A_BUCK_MODE_5, 0xFF, 0x02},
+		{WCD9XXX_A_BUCK_MODE_1, 0xFF, 0xA1},
+		/* Delay 1ms */
+		{WCD9XXX_A_NCP_EN, 0xFF, 0xFF},
+		/* Delay 1ms */
+		{WCD9XXX_A_BUCK_MODE_5, 0xFF, 0x03},
+		{WCD9XXX_A_BUCK_MODE_5, 0xFF, 0x7B},
+		{WCD9XXX_A_CDC_CLSH_B1_CTL, 0xFF, 0xE6},
+		{WCD9XXX_A_RX_HPH_L_DAC_CTL, 0xFF, 0x40},
+		{WCD9XXX_A_RX_HPH_L_DAC_CTL, 0xFF, 0xC0},
+		{WCD9XXX_A_RX_HPH_R_DAC_CTL, 0xFF, 0x40},
+		{WCD9XXX_A_RX_HPH_R_DAC_CTL, 0xFF, 0xC0},
+		{WCD9XXX_A_NCP_STATIC, 0xFF, 0x08},
+		{WCD9XXX_A_RX_HPH_L_DAC_CTL, 0x03, 0x01},
+		{WCD9XXX_A_RX_HPH_R_DAC_CTL, 0x03, 0x01},
+	};
+
+	/*
+	 * Configure PA in class-AB, -18dB gain,
+	 * companding off, OCP off, Chopping ON
+	 */
+	for (i = 0; i < ARRAY_SIZE(reg_set_paon); i++) {
+		/*
+		 * Some of the codec registers like BUCK_MODE_1
+		 * and NCP_EN requires 1ms wait time for them
+		 * to take effect. Other register writes for
+		 * PA configuration do not require any wait time.
+		 */
+		if (reg_set_paon[i].reg == WCD9XXX_A_BUCK_MODE_1 ||
+		    reg_set_paon[i].reg == WCD9XXX_A_NCP_EN)
+			delay = 1000;
+		else
+			delay = 0;
+		wcd9xxx_soc_update_bits_push(codec, lh,
+					     reg_set_paon[i].reg,
+					     reg_set_paon[i].mask,
+					     reg_set_paon[i].val, delay);
+	}
+	pr_debug("%s: PAs are prepared\n", __func__);
+	return;
+}
+
+static int wcd9xxx_enable_static_pa(struct wcd9xxx_mbhc *mbhc, bool enable)
+{
+	struct snd_soc_codec *codec = mbhc->codec;
+	int wg_time = snd_soc_read(codec, WCD9XXX_A_RX_HPH_CNP_WG_TIME) *
+				   TAPAN_WG_TIME_FACTOR_US;
+	/*
+	 * Tapan requires additional time to enable PA.
+	 * It is observed during experiments that we need
+	 * an additional wait time about 0.35 times of
+	 * the WG_TIME
+	 */
+	wg_time += (int) (wg_time * 35) / 100;
+
+	snd_soc_update_bits(codec, WCD9XXX_A_RX_HPH_CNP_EN, 0x30,
+			    enable ? 0x30 : 0x0);
+	/* Wait for wave gen time to avoid pop noise */
+	usleep_range(wg_time, wg_time + WCD9XXX_USLEEP_RANGE_MARGIN_US);
+	pr_debug("%s: PAs are %s as static mode (wg_time %d)\n", __func__,
+		 enable ? "enabled" : "disabled", wg_time);
+	return 0;
+}
+
+static int tapan_setup_zdet(struct wcd9xxx_mbhc *mbhc,
+			    enum mbhc_impedance_detect_stages stage)
+{
+
+	int ret = 0;
+	struct snd_soc_codec *codec = mbhc->codec;
+	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
+	const int mux_wait_us = 25;
+
+	switch (stage) {
+
+	case PRE_MEAS:
+		INIT_LIST_HEAD(&tapan->reg_save_restore);
+		/* Configure PA */
+		wcd9xxx_prepare_hph_pa(mbhc, &tapan->reg_save_restore);
+
+#define __wr(reg, mask, value)						  \
+	do {								  \
+		ret = wcd9xxx_soc_update_bits_push(codec,		  \
+						   &tapan->reg_save_restore, \
+						   reg, mask, value, 0);  \
+		if (ret < 0)						  \
+			return ret;					  \
+	} while (0)
+
+		/* Setup MBHC */
+		__wr(WCD9XXX_A_MBHC_SCALING_MUX_1, 0x7F, 0x40);
+		__wr(WCD9XXX_A_MBHC_SCALING_MUX_2, 0xFF, 0xF0);
+		__wr(WCD9XXX_A_TX_7_MBHC_TEST_CTL, 0xFF, 0x78);
+		__wr(WCD9XXX_A_TX_7_MBHC_EN, 0xFF, 0xEC);
+		__wr(WCD9XXX_A_CDC_MBHC_TIMER_B4_CTL, 0xFF, 0x45);
+		__wr(WCD9XXX_A_CDC_MBHC_TIMER_B5_CTL, 0xFF, 0x80);
+
+		__wr(WCD9XXX_A_CDC_MBHC_CLK_CTL, 0xFF, 0x0A);
+		snd_soc_write(codec, WCD9XXX_A_CDC_MBHC_EN_CTL, 0x2);
+		__wr(WCD9XXX_A_CDC_MBHC_CLK_CTL, 0xFF, 0x02);
+
+		/* Enable Impedance Detection */
+		__wr(WCD9XXX_A_MBHC_HPH, 0xFF, 0xC8);
+
+		/*
+		 * CnP setup for 0mV
+		 * Route static data as input to noise shaper
+		 */
+		__wr(TAPAN_A_CDC_RX1_B3_CTL, 0xFF, 0x02);
+		__wr(TAPAN_A_CDC_RX2_B3_CTL, 0xFF, 0x02);
+
+		snd_soc_update_bits(codec, WCD9XXX_A_RX_HPH_L_TEST,
+				    0x02, 0x00);
+		snd_soc_update_bits(codec, WCD9XXX_A_RX_HPH_R_TEST,
+				    0x02, 0x00);
+
+		/* Reset the HPHL static data pointer */
+		__wr(TAPAN_A_CDC_RX1_B2_CTL, 0xFF, 0x00);
+		/* Four consecutive writes to set 0V as static data input */
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x00);
+
+		/* Reset the HPHR static data pointer */
+		__wr(TAPAN_A_CDC_RX2_B2_CTL, 0xFF, 0x00);
+		/* Four consecutive writes to set 0V as static data input */
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x00);
+
+		/* Enable the HPHL and HPHR PA */
+		wcd9xxx_enable_static_pa(mbhc, true);
+		break;
+	case POST_MEAS:
+		/* Turn off ICAL */
+		snd_soc_write(codec, WCD9XXX_A_MBHC_SCALING_MUX_2, 0xF0);
+
+		wcd9xxx_enable_static_pa(mbhc, false);
+
+		/*
+		 * Setup CnP wavegen to ramp to the desired
+		 * output using a 40ms ramp
+		 */
+
+		/* CnP wavegen current to 0.5uA */
+		snd_soc_write(codec, WCD9XXX_A_RX_HPH_BIAS_WG_OCP, 0x1A);
+		/* Set the current division ratio to 2000 */
+		snd_soc_write(codec, WCD9XXX_A_RX_HPH_CNP_WG_CTL, 0xDF);
+		/* Set the wavegen timer to max (60msec) */
+		snd_soc_write(codec, WCD9XXX_A_RX_HPH_CNP_WG_TIME, 0xA0);
+		/* Set the CnP reference current to sc_bias */
+		snd_soc_write(codec, WCD9XXX_A_RX_HPH_OCP_CTL, 0x6D);
+
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B2_CTL, 0x00);
+		/* Four consecutive writes to set -10mV as static data input */
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x1F);
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0x19);
+		snd_soc_write(codec, TAPAN_A_CDC_RX1_B1_CTL, 0xAA);
+
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B2_CTL, 0x00);
+		/* Four consecutive writes to set -10mV as static data input */
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x00);
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x1F);
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0x19);
+		snd_soc_write(codec, TAPAN_A_CDC_RX2_B1_CTL, 0xAA);
+
+		snd_soc_update_bits(codec, WCD9XXX_A_RX_HPH_L_TEST,
+				    0x02, 0x02);
+		snd_soc_update_bits(codec, WCD9XXX_A_RX_HPH_R_TEST,
+				    0x02, 0x02);
+		/* Enable the HPHL and HPHR PA and wait for 60mS */
+		wcd9xxx_enable_static_pa(mbhc, true);
+
+		snd_soc_update_bits(codec, WCD9XXX_A_MBHC_SCALING_MUX_1,
+				    0x7F, 0x40);
+		usleep_range(mux_wait_us,
+				mux_wait_us + WCD9XXX_USLEEP_RANGE_MARGIN_US);
+		break;
+	case PA_DISABLE:
+		wcd9xxx_enable_static_pa(mbhc, false);
+		wcd9xxx_restore_registers(codec, &tapan->reg_save_restore);
+		break;
+	}
+#undef __wr
+
+	return ret;
+}
+
+static void tapan_compute_impedance(s16 *l, s16 *r, uint32_t *zl, uint32_t *zr)
+{
+	int zln, zld;
+	int zrn, zrd;
+	int rl = 0, rr = 0;
+
+	zln = (l[1] - l[0]) * TAPAN_ZDET_MUL_FACTOR;
+	zld = (l[2] - l[0]);
+	if (zld)
+		rl = zln / zld;
+
+	zrn = (r[1] - r[0]) * TAPAN_ZDET_MUL_FACTOR;
+	zrd = (r[2] - r[0]);
+	if (zrd)
+		rr = zrn / zrd;
+
+	*zl = rl;
+	*zr = rr;
+}
+
 static const struct wcd9xxx_mbhc_cb mbhc_cb = {
 	.enable_mux_bias_block = tapan_enable_mux_bias_block,
 	.cfilt_fast_mode = tapan_put_cfilt_fast_mode,
@@ -4919,6 +5465,8 @@ static const struct wcd9xxx_mbhc_cb mbhc_cb = {
 	.select_cfilt = tapan_select_cfilt,
 	.free_irq = tapan_free_irq,
 	.get_cdc_type = tapan_get_cdc_type,
+	.setup_zdet = tapan_setup_zdet,
+	.compute_impedance = tapan_compute_impedance,
 };
 
 int tapan_hs_detect(struct snd_soc_codec *codec,
@@ -4928,6 +5476,23 @@ int tapan_hs_detect(struct snd_soc_codec *codec,
 	return wcd9xxx_mbhc_start(&tapan->mbhc, mbhc_cfg);
 }
 EXPORT_SYMBOL(tapan_hs_detect);
+
+void tapan_hs_detect_exit(struct snd_soc_codec *codec)
+{
+	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
+	wcd9xxx_mbhc_stop(&tapan->mbhc);
+}
+EXPORT_SYMBOL(tapan_hs_detect_exit);
+
+void tapan_event_register(
+	int (*machine_event_cb)(struct snd_soc_codec *codec,
+				enum wcd9xxx_codec_event),
+	struct snd_soc_codec *codec)
+{
+	struct tapan_priv *tapan = snd_soc_codec_get_drvdata(codec);
+	tapan->machine_codec_event_cb = machine_event_cb;
+}
+EXPORT_SYMBOL(tapan_event_register);
 
 static int tapan_device_down(struct wcd9xxx *wcd9xxx)
 {
@@ -4978,24 +5543,34 @@ static int tapan_post_reset_cb(struct wcd9xxx *wcd9xxx)
 
 	wcd9xxx_resmgr_post_ssr(&tapan->resmgr);
 
+#ifndef CONFIG_ARCH_MSM8226 // Comment Disable MBHC	
+
 	wcd9xxx_mbhc_deinit(&tapan->mbhc);
+
+#endif
 
 	if (TAPAN_IS_1_0(wcd9xxx->version))
 		rco_clk_rate = TAPAN_MCLK_CLK_12P288MHZ;
 	else
 		rco_clk_rate = TAPAN_MCLK_CLK_9P6MHZ;
 
+#ifndef CONFIG_ARCH_MSM8226 // Comment Disable MBHC
+
 	ret = wcd9xxx_mbhc_init(&tapan->mbhc, &tapan->resmgr, codec, NULL,
-				&mbhc_cb, rco_clk_rate, false);
+				&mbhc_cb, rco_clk_rate,
+				TAPAN_CDC_ZDET_SUPPORTED);
 	if (ret)
 		pr_err("%s: mbhc init failed %d\n", __func__, ret);
 	else
 		wcd9xxx_mbhc_start(&tapan->mbhc, tapan->mbhc.mbhc_cfg);
+#endif
 
 	tapan_cleanup_irqs(tapan);
 	ret = tapan_setup_irqs(tapan);
 	if (ret)
 		pr_err("%s: Failed to setup irq: %d\n", __func__, ret);
+
+	tapan->machine_codec_event_cb(codec, WCD9XXX_CODEC_EVENT_CODEC_UP);
 
 	mutex_unlock(&codec->mutex);
 	return ret;
@@ -5035,6 +5610,16 @@ static void tapan_enable_config_rco(struct wcd9xxx *core, bool enable)
 	struct wcd9xxx_core_resource *core_res = &core->core_res;
 
 	if (enable) {
+		wcd9xxx_reg_update(core, WCD9XXX_A_BIAS_CENTRAL_BG_CTL,
+				   0x80, 0x80);
+		wcd9xxx_reg_update(core, WCD9XXX_A_BIAS_CENTRAL_BG_CTL,
+				   0x04, 0x04);
+		wcd9xxx_reg_update(core, WCD9XXX_A_BIAS_CENTRAL_BG_CTL,
+				   0x01, 0x01);
+		usleep_range(1000, 1000);
+		wcd9xxx_reg_update(core, WCD9XXX_A_BIAS_CENTRAL_BG_CTL,
+				   0x80, 0x00);
+
 		/* Enable RC Oscillator */
 		wcd9xxx_reg_update(core, WCD9XXX_A_RC_OSC_FREQ, 0x10, 0x00);
 		wcd9xxx_reg_write(core_res, WCD9XXX_A_BIAS_OSC_BG_CTL, 0x17);
@@ -5063,6 +5648,13 @@ static void tapan_enable_config_rco(struct wcd9xxx *core, bool enable)
 		wcd9xxx_reg_update(core, WCD9XXX_A_CLK_BUFF_EN2, 0x02, 0x02);
 		wcd9xxx_reg_update(core, WCD9XXX_A_CLK_BUFF_EN1, 0x05, 0x00);
 		usleep_range(50, 50);
+
+		wcd9xxx_reg_update(core, WCD9XXX_A_RC_OSC_FREQ, 0x80, 0x00);
+		usleep_range(10, 10);
+		wcd9xxx_reg_write(core_res, WCD9XXX_A_BIAS_OSC_BG_CTL, 0x16);
+		wcd9xxx_reg_update(core, WCD9XXX_A_BIAS_CENTRAL_BG_CTL,
+				   0x03, 0x00);
+		usleep_range(100, 100);
 	}
 
 }
@@ -5106,6 +5698,17 @@ static bool tapan_check_wcd9306(struct device *cdc_dev, bool sensed)
 	return ret;
 };
 
+#ifndef CONFIG_EXT_EARMIC_BIAS
+bool codec_probe_done = false;
+
+bool is_codec_probe_done(void)
+{
+	return codec_probe_done;
+}
+#endif
+
+EXPORT_SYMBOL(is_codec_probe_done);
+
 static int tapan_codec_probe(struct snd_soc_codec *codec)
 {
 	struct wcd9xxx *control;
@@ -5140,6 +5743,7 @@ static int tapan_codec_probe(struct snd_soc_codec *codec)
 
 	snd_soc_codec_set_drvdata(codec, tapan);
 
+	tapan->ldo_h_count = 0;
 	/* codec resmgr module init */
 	wcd9xxx = codec->control_data;
 	core_res = &wcd9xxx->core_res;
@@ -5171,13 +5775,19 @@ static int tapan_codec_probe(struct snd_soc_codec *codec)
 	else
 		rco_clk_rate = TAPAN_MCLK_CLK_9P6MHZ;
 
+	tapan->micb_2_ref_cnt = 0;
+
+#ifndef CONFIG_ARCH_MSM8226 //balaji.k : Comment Disable MBHC
+
 	ret = wcd9xxx_mbhc_init(&tapan->mbhc, &tapan->resmgr, codec, NULL,
-				&mbhc_cb, rco_clk_rate, false);
+				&mbhc_cb, rco_clk_rate,
+				TAPAN_CDC_ZDET_SUPPORTED);
 
 	if (ret) {
 		pr_err("%s: mbhc init failed %d\n", __func__, ret);
 		return ret;
 	}
+#endif
 
 	tapan->codec = codec;
 	for (i = 0; i < COMPANDER_MAX; i++) {
@@ -5224,9 +5834,10 @@ static int tapan_codec_probe(struct snd_soc_codec *codec)
 			INIT_LIST_HEAD(&tapan->dai[i].wcd9xxx_ch_list);
 			init_waitqueue_head(&tapan->dai[i].dai_wait);
 		}
+		tapan_init_slim_slave_cfg(codec);
 	}
 
-	if (tapan_check_wcd9306(codec->dev, false) == true) {
+	if (codec_ver == WCD9306) {
 		snd_soc_add_codec_controls(codec, tapan_9306_snd_controls,
 					   ARRAY_SIZE(tapan_9306_snd_controls));
 		snd_soc_dapm_new_controls(dapm, tapan_9306_dapm_widgets,
@@ -5251,11 +5862,13 @@ static int tapan_codec_probe(struct snd_soc_codec *codec)
 
 	atomic_set(&kp_tapan_priv, (unsigned long)tapan);
 	mutex_lock(&dapm->codec->mutex);
-	snd_soc_dapm_disable_pin(dapm, "ANC HPHL");
-	snd_soc_dapm_disable_pin(dapm, "ANC HPHR");
-	snd_soc_dapm_disable_pin(dapm, "ANC HEADPHONE");
-	snd_soc_dapm_disable_pin(dapm, "ANC EAR PA");
-	snd_soc_dapm_disable_pin(dapm, "ANC EAR");
+	if (codec_ver == WCD9306) {
+		snd_soc_dapm_disable_pin(dapm, "ANC HPHL");
+		snd_soc_dapm_disable_pin(dapm, "ANC HPHR");
+		snd_soc_dapm_disable_pin(dapm, "ANC HEADPHONE");
+		snd_soc_dapm_disable_pin(dapm, "ANC EAR PA");
+		snd_soc_dapm_disable_pin(dapm, "ANC EAR");
+	}
 	snd_soc_dapm_sync(dapm);
 	mutex_unlock(&dapm->codec->mutex);
 
@@ -5263,6 +5876,10 @@ static int tapan_codec_probe(struct snd_soc_codec *codec)
 
 	if (ret)
 		tapan_cleanup_irqs(tapan);
+
+#ifndef CONFIG_EXT_EARMIC_BIAS
+	codec_probe_done = true;
+#endif
 
 	return ret;
 
@@ -5288,8 +5905,10 @@ static int tapan_codec_remove(struct snd_soc_codec *codec)
 
 	tapan_cleanup_irqs(tapan);
 
+#ifndef CONFIG_ARCH_MSM8226 //Kuldeep Comment Disable MBHC
 	/* cleanup MBHC */
 	wcd9xxx_mbhc_deinit(&tapan->mbhc);
+#endif
 	/* cleanup resmgr */
 	wcd9xxx_resmgr_deinit(&tapan->resmgr);
 
@@ -5356,6 +5975,7 @@ static int __devinit tapan_probe(struct platform_device *pdev)
 			 __func__);
 		is_wcd9306 = true;
 	}
+	codec_ver = is_wcd9306 ? WCD9306 : WCD9302;
 
 	if (!is_wcd9306) {
 		if (wcd9xxx_get_intf_type() == WCD9XXX_INTERFACE_TYPE_SLIMBUS)
