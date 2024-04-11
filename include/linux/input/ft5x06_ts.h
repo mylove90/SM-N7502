@@ -55,8 +55,10 @@ struct ft5x06_ts_platform_data {
 	u32 hard_rst_dly;
 	u32 soft_rst_dly;
 	u32 num_max_touches;
+	bool fw_vkey_support;
 	bool no_force_update;
 	bool i2c_pull_up;
+	bool ignore_id_check;
 	int (*power_init) (bool);
 	int (*power_on) (bool);
 };
