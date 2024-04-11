@@ -44,12 +44,8 @@ Optional properties:
 - qcom,platform-enable-gpio:		Specifies the panel lcd/display enable gpio.
 - qcom,platform-reset-gpio:		Specifies the panel reset gpio.
 - qcom,platform-te-gpio:		Specifies the gpio used for TE.
-- qcom,platform-reset-sequence:		An array that lists the
-					sequence of reset gpio values and sleeps
-					Each command will have the format defined
-					as below:
-					--> Reset GPIO value
-					--> Sleep value (in ms)
+- qcom,platform-mode-gpio:		Select video/command mode of panel through gpio when it supports
+					both modes.
 
 Example:
         mdss_dsi0: qcom,mdss_dsi@fd922800 {
@@ -74,7 +70,7 @@ Example:
 		qcom,platform-reset-gpio = <&msmgpio 25 1>;
 		qcom,platform-te-gpio = <&msmgpio 24 0>;
 		qcom,platform-enable-gpio = <&msmgpio 58 1>;
-		qcom,platform-reset-sequence = <1 25 0 20 1 10>;
+		qcom,platform-mode-gpio = <&msmgpio 7 0>;
 		qcom,platform-supply-entry1 {
 			qcom,supply-name = "vdd";
 			qcom,supply-min-voltage = <2800000>;
