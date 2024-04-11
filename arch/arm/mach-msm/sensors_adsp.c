@@ -1074,10 +1074,31 @@ const struct file_operations sensors_adsp_fops = {
 	.unlocked_ioctl = sensors_adsp_ioctl,
 };
 
+ struct class* get_adsp_sensor_class( void )
+{
+
+pr_err("renju %s:",__func__);
+if (sns_ctl.dev_class == NULL) {
+		sns_ctl.dev_class = class_create(THIS_MODULE, DRV_NAME);
+		if (sns_ctl.dev_class == NULL) {
+			pr_err("%s: class_create fail.\n", __func__);
+	}
+}
+
+return sns_ctl.dev_class;
+}
+
+EXPORT_SYMBOL(get_adsp_sensor_class);
+
 static int sensors_adsp_probe(struct platform_device *pdev)
 {
 	int ret = 0;
+	pr_err("renju %s:++",__func__);
+	if (sns_ctl.dev_class == NULL) {
 	sns_ctl.dev_class = class_create(THIS_MODULE, DRV_NAME);
+	}
+        //sensors_class = sns_ctl.dev_class;
+        //pr_err("pradeep %s:",__func__);
 	if (sns_ctl.dev_class == NULL) {
 		pr_err("%s: class_create fail.\n", __func__);
 		goto res_err;

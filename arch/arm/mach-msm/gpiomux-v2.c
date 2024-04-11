@@ -13,6 +13,12 @@
 #include <linux/io.h>
 #include <mach/msm_iomap.h>
 #include <mach/gpiomux.h>
+#include <linux/kernel.h>
+
+#if defined(CONFIG_MACH_BAFFIN2_CHN_CMCC)
+extern unsigned __msm_gpio_get_intr_status(unsigned gpio);
+extern unsigned __msm_gpio_get_intr_config(unsigned gpio);
+#endif
 
 #define GPIO_CFG(n)    (MSM_TLMM_BASE + 0x1000 + (0x10 * n))
 #define GPIO_IN_OUT(n) (MSM_TLMM_BASE + 0x1004 + (0x10 * n))
@@ -30,3 +36,21 @@ void __msm_gpiomux_write(unsigned gpio, struct gpiomux_setting val)
 	__raw_writel(bits, GPIO_CFG(gpio));
 	mb();
 }
+
+
+void msm_gpiomux_read(unsigned gpio, struct gpiomux_setting *val)
+{
+	uint32_t bits = readl_relaxed(GPIO_CFG(gpio));
+
+	val->pull = bits & 0x3;
+	val->func = (bits >> 2) & 0xf;
+	val->drv = (bits >> 6) & 0x7;
+	val->dir = bits & BIT_MASK(9) ? 1 : GPIOMUX_IN;
+
+	if ((val->func == GPIOMUX_FUNC_GPIO) && (val->dir))
+		val->dir = readl_relaxed(GPIO_IN_OUT(gpio)) & BIT_MASK(1) ?
+			GPIOMUX_OUT_HIGH : GPIOMUX_OUT_LOW;
+}
+
+
+

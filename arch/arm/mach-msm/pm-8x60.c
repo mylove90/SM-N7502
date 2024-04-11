@@ -61,9 +61,15 @@
 #include "pm-boot.h"
 #include <mach/event_timer.h>
 #include <linux/cpu_pm.h>
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
 
 #define SCM_L2_RETENTION	(0x2)
 #define SCM_CMD_TERMINATE_PC	(0x2)
+#ifdef CONFIG_SEC_GPIO_DVS
+#include <linux/secgpio_dvs.h>
+#endif
 
 #define GET_CPU_OF_ATTR(attr) \
 	(container_of(attr, struct msm_pm_kobj_attribute, ka)->cpu)
@@ -481,6 +487,10 @@ static bool __ref msm_pm_spm_power_collapse(
 	bool collapsed = 0;
 	int ret;
 	bool save_cpu_regs = !cpu || from_idle;
+	unsigned int saved_gic_cpu_ctrl;
+
+	saved_gic_cpu_ctrl = readl_relaxed(MSM_QGIC_CPU_BASE + GIC_CPU_CTRL);
+	mb();
 
 	if (MSM_PM_DEBUG_POWER_COLLAPSE & msm_pm_debug_mask)
 		pr_info("CPU%u: %s: notify_rpm %d\n",
@@ -503,7 +513,19 @@ static bool __ref msm_pm_spm_power_collapse(
 	if (from_idle && msm_pm_pc_reset_timer)
 		clockevents_notify(CLOCK_EVT_NOTIFY_BROADCAST_ENTER, &cpu);
 
+#ifdef CONFIG_VFP
+	vfp_pm_suspend();
+#endif
+
+#ifdef CONFIG_SEC_DEBUG
+	secdbg_sched_msg("+pc(I:%d,R:%d)", from_idle, notify_rpm);
+#endif
+	
 	collapsed = save_cpu_regs ? msm_pm_collapse() : msm_pm_pc_hotplug();
+
+#ifdef CONFIG_SEC_DEBUG
+	secdbg_sched_msg("-pc(%d)", collapsed);
+#endif
 
 	if (from_idle && msm_pm_pc_reset_timer)
 		clockevents_notify(CLOCK_EVT_NOTIFY_BROADCAST_EXIT, &cpu);
@@ -511,7 +533,14 @@ static bool __ref msm_pm_spm_power_collapse(
 	msm_pm_boot_config_after_pc(cpu);
 
 	if (collapsed) {
+#ifdef CONFIG_VFP
+		vfp_pm_resume();
+#endif
 		cpu_init();
+		writel(0xF0, MSM_QGIC_CPU_BASE + GIC_CPU_PRIMASK);
+		writel_relaxed(saved_gic_cpu_ctrl,
+				MSM_QGIC_CPU_BASE + GIC_CPU_CTRL);
+		mb();
 		local_fiq_enable();
 	}
 
@@ -1135,6 +1164,14 @@ void msm_pm_set_sleep_ops(struct msm_pm_sleep_ops *ops)
 
 static int msm_suspend_prepare(void)
 {
+#ifdef CONFIG_SEC_GPIO_DVS
+	/************************ Caution !!! ****************************/
+	/* This function must be located in appropriate SLEEP position
+	 * in accordance with the specification of each BB vendor.
+	 */
+	/************************ Caution !!! ****************************/
+	gpio_dvs_check_sleepgpio();
+#endif	
 	msm_mpm_suspend_prepare();
 	return 0;
 }
