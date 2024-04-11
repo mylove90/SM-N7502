@@ -113,15 +113,11 @@ struct irq_chip msm_gpio_irq_extn = {
  * as wakeup sources.  When the device is suspended, interrupts which are
  * not wakeup sources are disabled.
  *
- * @dual_edge_irqs: a bitmap used to track which irqs are configured
- * as dual-edge, as this is not supported by the hardware and requires
- * some special handling in the driver.
  */
 struct msm_gpio_dev {
 	struct gpio_chip gpio_chip;
 	unsigned long *enabled_irqs;
 	unsigned long *wake_irqs;
-	unsigned long *dual_edge_irqs;
 	struct irq_domain *domain;
 };
 
@@ -219,64 +215,11 @@ static struct msm_gpio_dev msm_gpio = {
 	},
 };
 
-static void switch_mpm_config(struct irq_data *d, unsigned val)
-{
-	/* switch the configuration in the mpm as well */
-	if (!msm_gpio_irq_extn.irq_set_type)
-		return;
-
-	if (val)
-		msm_gpio_irq_extn.irq_set_type(d, IRQF_TRIGGER_FALLING);
-	else
-		msm_gpio_irq_extn.irq_set_type(d, IRQF_TRIGGER_RISING);
-}
-
-/* For dual-edge interrupts in software, since the hardware has no
- * such support:
- *
- * At appropriate moments, this function may be called to flip the polarity
- * settings of both-edge irq lines to try and catch the next edge.
- *
- * The attempt is considered successful if:
- * - the status bit goes high, indicating that an edge was caught, or
- * - the input value of the gpio doesn't change during the attempt.
- * If the value changes twice during the process, that would cause the first
- * test to fail but would force the second, as two opposite
- * transitions would cause a detection no matter the polarity setting.
- *
- * The do-loop tries to sledge-hammer closed the timing hole between
- * the initial value-read and the polarity-write - if the line value changes
- * during that window, an interrupt is lost, the new polarity setting is
- * incorrect, and the first success test will fail, causing a retry.
- *
- * Algorithm comes from Google's msmgpio driver, see mach-msm/gpio.c.
- */
-static void msm_gpio_update_dual_edge_pos(struct irq_data *d, unsigned gpio)
-{
-	int loop_limit = 100;
-	unsigned val, val2, intstat;
-
-	do {
-		val = __msm_gpio_get_inout(gpio);
-		__msm_gpio_set_polarity(gpio, val);
-		val2 = __msm_gpio_get_inout(gpio);
-		intstat = __msm_gpio_get_intr_status(gpio);
-		if (intstat || val == val2) {
-			switch_mpm_config(d, val);
-			return;
-		}
-	} while (loop_limit-- > 0);
-	pr_err("%s: dual-edge irq failed to stabilize, %#08x != %#08x\n",
-	       __func__, val, val2);
-}
-
 static void msm_gpio_irq_ack(struct irq_data *d)
 {
 	int gpio = msm_irq_to_gpio(&msm_gpio.gpio_chip, d->irq);
 
 	__msm_gpio_set_intr_status(gpio);
-	if (test_bit(gpio, msm_gpio.dual_edge_irqs))
-		msm_gpio_update_dual_edge_pos(d, gpio);
 	mb();
 }
 
@@ -329,27 +272,17 @@ static int msm_gpio_irq_set_type(struct irq_data *d, unsigned int flow_type)
 
 	if (flow_type & IRQ_TYPE_EDGE_BOTH) {
 		__irq_set_handler_locked(d->irq, handle_edge_irq);
-		if ((flow_type & IRQ_TYPE_EDGE_BOTH) == IRQ_TYPE_EDGE_BOTH)
-			__set_bit(gpio, msm_gpio.dual_edge_irqs);
-		else
-			__clear_bit(gpio, msm_gpio.dual_edge_irqs);
 	} else {
 		__irq_set_handler_locked(d->irq, handle_level_irq);
-		__clear_bit(gpio, msm_gpio.dual_edge_irqs);
 	}
 
 	__msm_gpio_set_intr_cfg_type(gpio, flow_type);
 
-	if ((flow_type & IRQ_TYPE_EDGE_BOTH) == IRQ_TYPE_EDGE_BOTH)
-		msm_gpio_update_dual_edge_pos(d, gpio);
-
 	mb();
 	spin_unlock_irqrestore(&tlmm_lock, irq_flags);
 
-	if ((flow_type & IRQ_TYPE_EDGE_BOTH) != IRQ_TYPE_EDGE_BOTH) {
-		if (msm_gpio_irq_extn.irq_set_type)
-			msm_gpio_irq_extn.irq_set_type(d, flow_type);
-	}
+	if (msm_gpio_irq_extn.irq_set_type)
+		msm_gpio_irq_extn.irq_set_type(d, flow_type);
 
 	return 0;
 }
@@ -372,9 +305,19 @@ static irqreturn_t msm_summary_irq_handler(int irq, void *data)
 	for (i = find_first_bit(msm_gpio.enabled_irqs, ngpio);
 	     i < ngpio;
 	     i = find_next_bit(msm_gpio.enabled_irqs, ngpio, i + 1)) {
-		if (__msm_gpio_get_intr_status(i))
+		
+		if (__msm_gpio_get_intr_status(i))	{
+
+#if defined(CONFIG_MACH_BAFFIN2_CHN_CMCC)	// for debugging mdm_status_irq issue
+			if (i == 27 || i == 49)
+				pr_err("[msm_summary_irq_handler] gpio:%d, status:%d, config:%d\n", 
+					(int)i, 
+					(int)__msm_gpio_get_intr_status(i), 
+					(int)__msm_gpio_get_intr_config(i));
+#endif			
 			generic_handle_irq(msm_gpio_to_irq(&msm_gpio.gpio_chip,
 							   i));
+		}
 	}
 
 	chained_irq_exit(chip, desc);
@@ -444,8 +387,8 @@ void msm_gpio_show_resume_irq(void)
 		intstat = __msm_gpio_get_intr_status(i);
 		if (intstat) {
 			irq = msm_gpio_to_irq(&msm_gpio.gpio_chip, i);
-			pr_warning("%s: %d triggered\n",
-				__func__, irq);
+			pr_warning("%s: %d(%d) triggered\n",
+				__func__, irq, i);
 		}
 	}
 	spin_unlock_irqrestore(&tlmm_lock, irq_flags);
@@ -609,17 +552,10 @@ static int __devinit msm_gpio_probe(struct platform_device *pdev)
 				, __func__);
 		return -ENOMEM;
 	}
-	msm_gpio.dual_edge_irqs = devm_kzalloc(&pdev->dev, sizeof(unsigned long)
-					* BITS_TO_LONGS(ngpio), GFP_KERNEL);
-	if (!msm_gpio.dual_edge_irqs) {
-		dev_err(&pdev->dev, "%s failed to allocated dual_edge_irqs bitmap\n"
-				, __func__);
-		return -ENOMEM;
-	}
 
 	bitmap_zero(msm_gpio.enabled_irqs, ngpio);
 	bitmap_zero(msm_gpio.wake_irqs, ngpio);
-	bitmap_zero(msm_gpio.dual_edge_irqs, ngpio);
+
 	ret = gpiochip_add(&msm_gpio.gpio_chip);
 	if (ret < 0)
 		return ret;
