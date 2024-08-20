@@ -363,6 +363,14 @@ struct msm_vidc_format vdec_formats[] = {
 		.type = OUTPUT_PORT,
 	},
 	{
+		.name = "HEVC_HYBRID",
+		.description = "HEVC compressed format",
+		.fourcc = V4L2_PIX_FMT_HEVC_HYBRID,
+		.num_planes = 1,
+		.get_frame_size = get_frame_size_compressed,
+		.type = OUTPUT_PORT,
+	},
+	{
 		.name = "VP8",
 		.description = "VP8 compressed format",
 		.fourcc = V4L2_PIX_FMT_VP8,
@@ -1029,15 +1037,13 @@ static int msm_vdec_queue_setup(struct vb2_queue *q,
 			mutex_unlock(&inst->lock);
 			break;
 		}
-		if (*num_buffers && *num_buffers >=
-			bufreq->buffer_count_actual) {
+		*num_buffers = max(*num_buffers, bufreq->buffer_count_min);
+		if (*num_buffers != bufreq->buffer_count_actual) {
 			property_id = HAL_PARAM_BUFFER_COUNT_ACTUAL;
 			new_buf_count.buffer_type = HAL_BUFFER_OUTPUT;
 			new_buf_count.buffer_count_actual = *num_buffers;
 			rc = call_hfi_op(hdev, session_set_property,
 				inst->session, property_id, &new_buf_count);
-		} else {
-			*num_buffers = bufreq->buffer_count_min;
 		}
 		mutex_unlock(&inst->lock);
 		dprintk(VIDC_DBG, "count =  %d, size = %d, alignment = %d\n",

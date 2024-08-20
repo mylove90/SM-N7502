@@ -16,7 +16,17 @@
 
 #include <linux/platform_device.h>
 #include <linux/types.h>
+#if defined(CONFIG_FB_MSM_MDSS_S6E8AA0A_HD_PANEL)
+#include "smart_mtp_s6e8aa0x01.h"
+#include "smart_dimming.h"
+typedef unsigned int boolean;
+#endif
 
+#if defined(CONFIG_FB_MSM_MDSS_MAGNA_WVGA_PANEL)
+#include "smart_mtp_ea8868.h"
+#include "smart_dimming.h"
+typedef unsigned int boolean;
+#endif
 /* panel id type */
 struct panel_id {
 	u16 id;
@@ -24,6 +34,7 @@ struct panel_id {
 };
 
 #define DEFAULT_FRAME_RATE	60
+#define MDSS_DSI_RST_SEQ_LEN	10
 
 /* panel type list */
 #define NO_PANEL		0xffff	/* No Panel */
@@ -64,11 +75,16 @@ enum {
 	MDSS_PANEL_INTF_HDMI,
 };
 
+enum {
+	MODE_GPIO_NOT_VALID = 0,
+	MODE_GPIO_HIGH,
+	MODE_GPIO_LOW,
+};
+
 #define MDSS_MAX_PANEL_LEN      256
 #define MDSS_INTF_MAX_NAME_LEN 5
 struct mdss_panel_intf {
 	char name[MDSS_INTF_MAX_NAME_LEN];
-	u8   len;
 	int  type;
 };
 
@@ -107,6 +123,7 @@ struct mdss_panel_cfg {
  *				display state from boot loader to panel driver.
  *				The event handler will enable the panel and
  *				vote for the display clocks.
+ * @MDSS_EVENT_PANEL_UPDATE_FPS: Event to update the frame rate of the panel.
  * @MDSS_EVENT_FB_REGISTERED:	Called after fb dev driver has been registered,
  *				panel driver gets ptr to struct fb_info which
  *				holds fb dev information.
@@ -114,6 +131,7 @@ struct mdss_panel_cfg {
 				 - 0 clock disable
 				 - 1 clock enable
  * @MDSS_EVENT_DSI_CMDLIST_KOFF: kickoff sending dcs command from command list
+ * @MDSS_EVENT_ENABLE_PARTIAL_UPDATE: Event to update ROI of the panel.
  */
 enum mdss_intf_events {
 	MDSS_EVENT_RESET = 1,
@@ -121,15 +139,18 @@ enum mdss_intf_events {
 	MDSS_EVENT_PANEL_ON,
 	MDSS_EVENT_BLANK,
 	MDSS_EVENT_PANEL_OFF,
+	MTP_READ,
 	MDSS_EVENT_CLOSE,
 	MDSS_EVENT_SUSPEND,
 	MDSS_EVENT_RESUME,
 	MDSS_EVENT_CHECK_PARAMS,
 	MDSS_EVENT_CONT_SPLASH_BEGIN,
 	MDSS_EVENT_CONT_SPLASH_FINISH,
+	MDSS_EVENT_PANEL_UPDATE_FPS,
 	MDSS_EVENT_FB_REGISTERED,
 	MDSS_EVENT_PANEL_CLK_CTRL,
 	MDSS_EVENT_DSI_CMDLIST_KOFF,
+	MDSS_EVENT_ENABLE_PARTIAL_UPDATE,
 };
 
 struct lcd_panel_info {
@@ -155,9 +176,9 @@ struct mdss_dsi_phy_ctrl {
 	uint32_t timing[12];
 	uint32_t ctrl[4];
 	uint32_t strength[2];
-	char bistCtrl[6];
+	char bistctrl[6];
 	uint32_t pll[21];
-	char laneCfg[45];
+	char lanecfg[45];
 };
 
 struct mipi_panel_info {
@@ -180,7 +201,7 @@ struct mipi_panel_info {
 	char t_clk_post; /* 0xc0, DSI_CLKOUT_TIMING_CTRL */
 	char t_clk_pre;  /* 0xc0, DSI_CLKOUT_TIMING_CTRL */
 	char vc;	/* virtual channel */
-	struct mdss_dsi_phy_ctrl *dsi_phy_db;
+	struct mdss_dsi_phy_ctrl dsi_phy_db;
 	/* video mode */
 	char pulse_mode_hsa_he;
 	char hfp_power_stop;
@@ -207,6 +228,11 @@ struct mipi_panel_info {
 
 	char vsync_enable;
 	char hw_vsync_mode;
+};
+
+enum dynamic_fps_update {
+	DFPS_SUSPEND_RESUME_MODE,
+	DFPS_IMMEDIATE_CLK_UPDATE_MODE,
 };
 
 enum lvds_mode {
@@ -258,13 +284,24 @@ struct mdss_panel_info {
 	u32 frame_count;
 	u32 is_3d_panel;
 	u32 out_format;
+	u32 rst_seq[MDSS_DSI_RST_SEQ_LEN];
+	u32 rst_seq_len;
 	u32 vic; /* video identification code */
+	u32 roi_x;
+	u32 roi_y;
+	u32 roi_w;
+	u32 roi_h;
 	int bklt_ctrl;	/* backlight ctrl */
 	int pwm_pmic_gpio;
 	int pwm_lpg_chan;
 	int pwm_period;
+	u32 mode_gpio_state;
+	bool dynamic_fps;
+	char dfps_update;
+	int new_fps;
 
 	u32 cont_splash_enabled;
+	u32 partial_update_enabled;
 	struct ion_handle *splash_ihdl;
 	u32 panel_power_on;
 
@@ -274,10 +311,21 @@ struct mdss_panel_info {
 	struct lvds_panel_info lvds;
 };
 
+#if defined(CONFIG_FB_MSM_MDSS_S6E8AA0A_HD_PANEL) ||  defined(CONFIG_FB_MSM_MDSS_MAGNA_WVGA_PANEL)
+#define MTP_DATA_SIZE (24)
+#define ELVSS_DATA_SIZE (24)
+
+struct cmd_set {
+	struct dsi_cmd_desc *cmd;
+	int size;
+};
+#endif
+
 struct mdss_panel_data {
 	struct mdss_panel_info panel_info;
 	void (*set_backlight) (struct mdss_panel_data *pdata, u32 bl_level);
 	unsigned char *mmss_cc_base;
+	int (*panel_reset_fn)(struct mdss_panel_data *pdata, int enable);
 
 	/**
 	 * event_handler() - callback handler for MDP core events
@@ -294,6 +342,39 @@ struct mdss_panel_data {
 	int (*event_handler) (struct mdss_panel_data *pdata, int e, void *arg);
 
 	struct mdss_panel_data *next;
+
+#if defined(CONFIG_FB_MSM_MDSS_S6E8AA0A_HD_PANEL) || defined(CONFIG_FB_MSM_MDSS_MAGNA_WVGA_PANEL)
+	unsigned char *gamma_smartdim_4_8;
+	int *lux_table;
+	int lux_table_max_cnt;
+	struct SMART_DIM smart_s6e8aa0x01;
+	struct SMART_DIM smart_ea8868;
+
+	struct str_smart_dim smart;
+	signed char lcd_current_cd_idx;
+	unsigned char lcd_mtp_data[MTP_DATA_SIZE+16] ;
+	unsigned char lcd_elvss_data[ELVSS_DATA_SIZE+16];
+	unsigned char *gamma_smartdim;
+	unsigned char *gamma_initial;
+
+	struct cmd_set gamma_update;
+	struct cmd_set elvss_update;
+	struct cmd_set elvss_update_4_8;
+
+	struct cmd_set acl_on;
+	struct cmd_set acl_off;
+	struct cmd_set acl_update;
+
+	int (*set_gamma)(int bl_level, int gamma_mode);
+	int (*set_acl)(int bl_level);
+	int (*set_elvss)(int bl_level);
+	int (*set_elvss_4_8)(int bl_level);
+	int (*prepare_brightness_control_cmd_array)(int lcd_type, int bl_level);
+
+	struct cmd_set combined_ctrl;
+
+	boolean ldi_acl_stat;
+#endif
 };
 
 /**
@@ -348,6 +429,20 @@ static inline int mdss_panel_get_vtotal(struct mdss_panel_info *pinfo)
 			pinfo->lcdc.v_pulse_width;
 }
 
+/*
+ * mdss_panel_get_htotal() - return panel horizontal width
+ * @pinfo:	Pointer to panel info containing all panel information
+ *
+ * Returns the total width of the panel including any blanking regions
+ * which are not visible to user but used for calculations.
+ */
+static inline int mdss_panel_get_htotal(struct mdss_panel_info *pinfo)
+{
+	return pinfo->xres + pinfo->lcdc.h_back_porch +
+			pinfo->lcdc.h_front_porch +
+			pinfo->lcdc.h_pulse_width;
+}
+
 int mdss_register_panel(struct platform_device *pdev,
 	struct mdss_panel_data *pdata);
 
@@ -383,4 +478,9 @@ int mdss_panel_get_boot_cfg(void);
  * returns true if mdss is ready, else returns false.
  */
 bool mdss_is_ready(void);
+int load_565rle_image(char *filename);
+int load_samsung_boot_logo(void);
+#if defined(CONFIG_LCD_CONNECTION_CHECK)
+int is_lcd_attached(void);
+#endif
 #endif /* MDSS_PANEL_H */

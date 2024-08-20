@@ -3229,10 +3229,13 @@ int snd_soc_register_card(struct snd_soc_card *card)
 	mutex_init(&card->mutex);
 	mutex_init(&card->dpcm_mutex);
 	mutex_init(&card->dapm_power_mutex);
-
+	mutex_init(&card->dapm_mutex);
 	ret = snd_soc_instantiate_card(card);
-	if (ret != 0)
+	if (ret != 0) {
 		soc_cleanup_card_debugfs(card);
+		if (card->rtd)
+			kfree(card->rtd);
+	}
 
 
 	return ret;

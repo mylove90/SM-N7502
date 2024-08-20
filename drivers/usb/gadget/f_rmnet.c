@@ -75,8 +75,13 @@ static struct usb_interface_descriptor rmnet_interface_desc = {
 	.bDescriptorType =	USB_DT_INTERFACE,
 	.bNumEndpoints =	3,
 	.bInterfaceClass =	USB_CLASS_VENDOR_SPEC,
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	.bInterfaceSubClass = 0xE0,
+	.bInterfaceProtocol = 0x00,
+#else
 	.bInterfaceSubClass =	USB_CLASS_VENDOR_SPEC,
 	.bInterfaceProtocol =	USB_CLASS_VENDOR_SPEC,
+#endif
 	/* .iInterface = DYNAMIC */
 };
 
@@ -303,6 +308,7 @@ static int rmnet_gport_setup(void)
 	int	i;
 	u8 base;
 
+
 	pr_debug("%s: bam ports: %u bam2bam ports: %u data hsic ports: %u data hsuart ports: %u"
 		" smd ports: %u ctrl hsic ports: %u ctrl hsuart ports: %u"
 	" nr_rmnet_ports: %u\n",
@@ -319,12 +325,13 @@ static int rmnet_gport_setup(void)
 
 	if (no_ctrl_smd_ports) {
 		ret = gsmd_ctrl_setup(FRMNET_CTRL_CLIENT,
-				no_ctrl_smd_ports, &base);
+				no_ctrl_smd_ports, &base); 
 		if (ret)
 			return ret;
 		for (i = 0; i < nr_rmnet_ports; i++)
 			if (rmnet_ports[i].port)
 				rmnet_ports[i].port->port_num += base;
+
 	}
 
 	if (no_data_hsic_ports) {
@@ -388,7 +395,7 @@ static int rmnet_gport_setup(void)
 
 static int gport_rmnet_connect(struct f_rmnet *dev)
 {
-	int			ret;
+	int			ret = 0;
 	unsigned		port_num;
 	enum transport_type	cxport = rmnet_ports[dev->port_num].ctrl_xport;
 	enum transport_type	dxport = rmnet_ports[dev->port_num].data_xport;

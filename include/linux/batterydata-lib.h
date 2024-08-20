@@ -26,6 +26,8 @@
 
 #define MAX_SINGLE_LUT_COLS	20
 
+#define MAX_BATT_ID_NUM		4
+
 struct single_row_lut {
 	int x[MAX_SINGLE_LUT_COLS];
 	int y[MAX_SINGLE_LUT_COLS];
@@ -69,6 +71,11 @@ struct pc_temp_ocv_lut {
 	int ocv[PC_TEMP_ROWS][PC_TEMP_COLS];
 };
 
+struct batt_ids {
+	int kohm[MAX_BATT_ID_NUM];
+	int num;
+};
+
 enum battery_type {
 	BATT_UNKNOWN = 0,
 	BATT_PALLADIUM,
@@ -99,7 +106,7 @@ enum battery_type {
  * @cutoff_uv:		cutoff voltage of the battery
  * @iterm_ua:		termination current of the battery when charging
  *			to 100%
- * @batt_id_kohm:	battery id resistor value
+ * @batt_id_kohm:	the best matched battery id resistor value
  */
 
 struct bms_battery_data {
@@ -127,6 +134,12 @@ extern struct bms_battery_data  desay_5200_data;
 extern struct bms_battery_data  oem_batt_data;
 extern struct bms_battery_data QRD_4v35_2000mAh_data;
 extern struct bms_battery_data  qrd_4v2_1300mah_data;
+extern struct bms_battery_data  Samsung_8x26_2600mAh_data;
+extern struct bms_battery_data  Samsung_8x26_CT01_3200mAh_data;
+extern struct bms_battery_data  Samsung_8x26_S3LITE_2100mAh_data;
+extern struct bms_battery_data  Samsung_8x26_CS03Q_2000mAh_data;
+extern struct bms_battery_data  Samsung_8x26_CRATERQ_2000mAh_data;
+extern struct bms_battery_data  Samsung_8x26_HL3GDS_3100mAh_data;
 
 int interpolate_fcc(struct single_row_lut *fcc_temp_lut, int batt_temp);
 int interpolate_scalingfactor(struct sf_lut *sf_lut, int row_entry, int pc);

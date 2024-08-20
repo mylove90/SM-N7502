@@ -28,6 +28,64 @@
 
 static struct msm_led_flash_ctrl_t fctrl;
 
+extern struct class *camera_class; /*sys/class/camera*/
+struct device *flash_dev;
+
+static ssize_t qpnp_led_flash(struct device *dev,
+	 struct device_attribute *attr, const char *buf, size_t size)
+{
+	int tmp;
+	uint32_t i;
+	sscanf(buf, "%i", &tmp);
+	CDBG("sysfs node: %d\n", tmp);
+	switch (tmp) {
+	case MSM_CAMERA_LED_OFF:
+		fctrl.rear_flash_status=MSM_CAMERA_LED_OFF;
+		for (i = 0; i < fctrl.num_sources; i++)
+			if (fctrl.flash_trigger[i])
+				led_trigger_event(fctrl.flash_trigger[i], 0);
+		if (fctrl.torch_trigger)
+			led_trigger_event(fctrl.torch_trigger, 0);
+		break;
+
+	case MSM_CAMERA_LED_LOW:
+		fctrl.rear_flash_status=MSM_CAMERA_LED_LOW;
+		if (fctrl.torch_trigger)
+			led_trigger_event(fctrl.torch_trigger, fctrl.torch_op_current);
+		break;
+
+	case MSM_CAMERA_LED_HIGH:
+		fctrl.rear_flash_status=MSM_CAMERA_LED_HIGH;
+		for (i = 0; i < fctrl.num_sources; i++)
+			if (fctrl.flash_trigger[i])
+				led_trigger_event(fctrl.flash_trigger[i], 0);
+		if (fctrl.torch_trigger)
+			led_trigger_event(fctrl.torch_trigger, 0);
+		break;
+
+#if defined(CONFIG_MACH_HLITE_EUR_3GDS)
+	case MSM_CAMERA_LED_FACTORY:
+		fctrl.rear_flash_status=MSM_CAMERA_LED_LOW;
+		if (fctrl.torch_trigger)
+			led_trigger_event(fctrl.torch_trigger, 145);
+		break; 
+#endif
+
+	default:
+		fctrl.rear_flash_status=MSM_CAMERA_LED_OFF;
+		for (i = 0; i < fctrl.num_sources; i++)
+			if (fctrl.flash_trigger[i])
+				led_trigger_event(fctrl.flash_trigger[i], 0);
+		if (fctrl.torch_trigger)
+			led_trigger_event(fctrl.torch_trigger, 0);
+		break;
+	}
+    return strnlen(buf, size);
+}
+
+static DEVICE_ATTR(rear_flash, S_IWUSR|S_IWGRP|S_IROTH,
+	NULL, qpnp_led_flash);
+
 static int32_t msm_led_trigger_get_subdev_id(struct msm_led_flash_ctrl_t *fctrl,
 	void *arg)
 {
@@ -52,6 +110,11 @@ static int32_t msm_led_trigger_config(struct msm_led_flash_ctrl_t *fctrl,
 	if (!fctrl) {
 		pr_err("failed\n");
 		return -EINVAL;
+	}
+	if(fctrl->rear_flash_status == MSM_CAMERA_LED_LOW || fctrl->rear_flash_status == MSM_CAMERA_LED_HIGH)
+	{
+		printk("Dont handle flash..rear_flash is set\n");
+		return rc;
 	}
 
 	switch (cfg->cfgtype) {
@@ -210,6 +273,19 @@ static int32_t msm_led_trigger_probe(struct platform_device *pdev)
 		}
 	}
 	rc = msm_led_flash_create_v4lsubdev(pdev, &fctrl);
+
+	if (!IS_ERR(camera_class)) {
+		flash_dev = device_create(camera_class, NULL, 0, NULL, "flash");
+		if (flash_dev < 0)
+			pr_err("Failed to create device(flash)!\n");
+
+		if (device_create_file(flash_dev, &dev_attr_rear_flash) < 0) {
+			pr_err("failed to create device file, %s\n",
+			   dev_attr_rear_flash.attr.name);
+		}
+
+	} else
+		pr_err("Failed to create device(flash) because of nothing camera class!\n");
 	return rc;
 }
 

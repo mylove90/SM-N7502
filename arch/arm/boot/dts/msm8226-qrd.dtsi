@@ -29,7 +29,10 @@
 			synaptics,irq-gpio = <&msmgpio 17 0x2008>;
 			synaptics,button-map = <139 102 158>;
 			synaptics,i2c-pull-up;
+			synaptics,power-down;
+			synaptics,disable-gpios;
 		};
+
 		focaltech@38 {
 			compatible = "focaltech,5x06";
 			reg = <0x38>;
@@ -114,13 +117,15 @@
 			"MIC BIAS1 External", "Handset Mic",
 			"AMIC2", "MIC BIAS2 External",
 			"MIC BIAS2 External", "Headset Mic",
-			"AMIC4", "MIC BIAS2 External",
+			"MIC BIAS1 External", "ANCRight Headset Mic",
+			"MIC BIAS1 External", "Analog Mic3",
+			"AMIC4", "MIC BIAS3 External",
+			"MIC BIAS3 External", "Analog Mic4";
 			"MIC BIAS2 External", "ANCRight Headset Mic",
 			"AMIC5", "MIC BIAS2 External",
-			"MIC BIAS2 External", "ANCLeft Headset Mic";
 
 		qcom,cdc-mclk-gpios = <&pm8226_gpios 1 0>;
-		qcom,cdc-vdd-spkr-gpios = <&pm8226_gpios 2 0>;
+		/*qcom,cdc-vdd-spkr-gpios = <&pm8226_gpios 2 0>;*/
 		qcom,cdc-us-euro-gpios = <&msmgpio 69 0>;
 	};
 
@@ -238,7 +243,7 @@
 	qcom,pad-drv-on = <0x4 0x4 0x4>; /* 10mA, 10mA, 10mA */
 	qcom,pad-drv-off = <0x0 0x0 0x0>; /* 2mA, 2mA, 2mA */
 
-	qcom,clk-rates = <400000 25000000 50000000 100000000 200000000>;
+	qcom,clk-rates = <400000 25000000 50000000>;
 
 	#address-cells = <0>;
 	interrupt-parent = <&sdhc_2>;
@@ -351,9 +356,12 @@
 		};
 
 		qcom,vibrator@c000 {
-			status = "okay";
+			compatible = "qcom,qpnp-vibrator";
+			reg = <0xc000 0x100>;
+			label = "vibrator";
 			qcom,vib-timeout-ms = <15000>;
 			qcom,vib-vtg-level-mV = <3100>;
+			status = "okay";
 		};
 
 	};
@@ -382,6 +390,7 @@
 	status = "okay";
 	qcom,battery-data = <&qrd_batterydata>;
 	qcom,tchg-mins = <240>;
+	qcom,ovp-monitor-en;
 };
 
 &pm8226_gpios {
@@ -454,6 +463,7 @@
 &slim_msm {
 	tapan_codec {
 		qcom,cdc-micbias1-ext-cap;
+		qcom,cdc-micbias3-ext-cap;
 	};
 };
 

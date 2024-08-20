@@ -82,13 +82,14 @@ struct adm_cmd_matrix_map_routings_v5 {
 */
 #define ADM_CMD_DEVICE_OPEN_V5                          0x00010326
 
-#define ADM_BIT_SHIFT_DEVICE_PERF_MODE_FLAG                           13
+/* Definition for a low latency stream session. */
+#define ADM_LOW_LATENCY_DEVICE_SESSION			0x2000
+
+/* Definition for a ultra low latency stream session. */
+#define ADM_ULTRA_LOW_LATENCY_DEVICE_SESSION		0x4000
 
 /* Definition for a legacy device session. */
 #define ADM_LEGACY_DEVICE_SESSION                                      0
-
-/* Definition for a low latency stream session. */
-#define ADM_LOW_LATENCY_DEVICE_SESSION                                 1
 
 /* Indicates that endpoint_id_2 is to be ignored.*/
 #define ADM_CMD_COPP_OPEN_END_POINT_ID_2_IGNORE				0xFFFF
@@ -1967,6 +1968,14 @@ struct afe_param_id_pseudo_port_cfg {
 	 */
 } __packed;
 
+#define AFE_PARAM_ID_DEVICE_HW_DELAY     0x00010243
+#define AFE_API_VERSION_DEVICE_HW_DELAY  0x1
+
+struct afe_param_id_device_hw_delay_cfg {
+	uint32_t    device_hw_delay_minor_version;
+	uint32_t    delay_in_us;
+} __packed;
+
 union afe_port_config {
 	struct afe_param_id_pcm_cfg               pcm;
 	struct afe_param_id_i2s_cfg               i2s;
@@ -1975,6 +1984,7 @@ union afe_port_config {
 	struct afe_param_id_rt_proxy_port_cfg     rtproxy;
 	struct afe_param_id_internal_bt_fm_cfg    int_bt_fm;
 	struct afe_param_id_pseudo_port_cfg       pseudo_port;
+	struct afe_param_id_device_hw_delay_cfg   hw_delay;
 } __packed;
 
 struct afe_audioif_config_command_no_payload {
@@ -2479,6 +2489,8 @@ struct asm_softvolume_params {
 #define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2 0x00010DA5
 
 #define ASM_STREAM_POSTPROC_TOPO_ID_DEFAULT 0x00010BE4
+
+#define ASM_STREAM_POSTPROC_TOPO_ID_NONE 0x00010C68
 
 #define ASM_MEDIA_FMT_EVRCB_FS 0x00010BEF
 
@@ -3816,11 +3828,12 @@ struct asm_session_cmdrsp_get_path_delay_v2 {
 #define ASM_STREAM_CMD_OPEN_WRITE_V2       0x00010D8F
 #define ASM_STREAM_CMD_OPEN_WRITE_V3       0x00010DB3
 
-#define ASM_SHIFT_STREAM_PERF_MODE_FLAG_IN_OPEN_WRITE                     28
+#define ASM_LOW_LATENCY_STREAM_SESSION				0x10000000
+
+#define ASM_ULTRA_LOW_LATENCY_STREAM_SESSION			0x20000000
 
 #define ASM_LEGACY_STREAM_SESSION                                      0
 
-#define ASM_LOW_LATENCY_STREAM_SESSION                                  1
 
 struct asm_stream_cmd_open_write_v3 {
 	struct apr_hdr			hdr;
@@ -4296,7 +4309,6 @@ struct asm_aac_sbr_ps_flag_param {
 struct asm_aac_dual_mono_mapping_param {
 	struct apr_hdr							hdr;
 	struct asm_stream_cmd_set_encdec_param	encdec;
-	struct asm_enc_cfg_blk_param_v2			encblk;
 	u16    left_channel_sce;
 	u16    right_channel_sce;
 
@@ -6747,6 +6759,102 @@ struct afe_lpass_digital_clk_config_command {
 	struct afe_digital_clk_cfg clk_cfg;
 } __packed;
 
+#define ASM_MODULE_ID_PP_SA                 0x10001fa0
+#define ASM_PARAM_ID_PP_SA_PARAMS           0x10001fa1
+
+//#define ASM_MODULE_ID_PP_SA_VOL             0x10001fa3
+//#define ASM_PARAM_ID_PP_SA_VOLUME           0x10001fa4
+#define ASM_MODULE_ID_PP_SA_VSP             0x10001fb0
+#define ASM_PARAM_ID_PP_SA_VSP_PARAMS       0x10001fb1
+
+#define ASM_MODULE_ID_PP_DHA                0x10001fc0
+#define ASM_PARAM_ID_PP_DHA_PARAMS          0x10001fc1
+
+#define ASM_MODULE_ID_PP_LRSM               0x10001fe0
+#define ASM_PARAM_ID_PP_LRSM_PARAMS         0x10001fe1
+
+#define ASM_MODULE_ID_PP_SA_EP              0x10001fd0
+#define ASM_PARAM_ID_PP_SA_EP_PARAMS        0x10001fd1
+#define ASM_PARAM_ID_PP_SA_EP_GET_PARAMS    0x10001fd2
+
+struct sa_params {
+	int16_t OutDevice;
+	int16_t Preset;
+	int32_t EqLev[7];
+	int16_t m3Dlevel;
+	int16_t BElevel;
+	int16_t CHlevel;
+	int16_t CHRoomSize;
+	int16_t Clalevel;
+	int16_t volume;
+	int16_t Sqrow;
+	int16_t Sqcol;
+	int16_t TabInfo;
+	int16_t NewUI;
+} __packed;
+
+struct vsp_params {
+	uint32_t speed_int;
+} __packed ;
+
+struct dha_params {
+	int32_t enable;
+	int16_t gain[2][6];
+} __packed ;
+
+struct lrsm_params {
+	int16_t sm;
+	int16_t lr;
+} __packed ;
+
+struct sa_ep_params {
+	int32_t enable;
+	int32_t score;
+} __packed ;
+
+struct asm_stream_cmd_set_pp_params_sa {
+	struct apr_hdr	hdr;
+	struct asm_stream_cmd_set_pp_params_v2 param;
+	struct asm_stream_param_data_v2 data;
+
+	struct sa_params sa_param;
+} __packed;
+
+struct asm_stream_cmd_set_pp_params_vsp {
+	struct apr_hdr	hdr;
+	struct asm_stream_cmd_set_pp_params_v2 param;
+	struct asm_stream_param_data_v2 data;
+
+	uint32_t speed_int;
+} __packed;
+
+struct asm_stream_cmd_set_pp_params_dha {
+	struct apr_hdr	hdr;
+	struct asm_stream_cmd_set_pp_params_v2 param;
+	struct asm_stream_param_data_v2 data;
+
+	int32_t enable;
+	int16_t gain[2][6];
+} __packed;
+
+struct asm_stream_cmd_set_pp_params_lrsm {
+	struct apr_hdr	hdr;
+	struct asm_stream_cmd_set_pp_params_v2 param;
+	struct asm_stream_param_data_v2 data;
+
+	int16_t sm;
+	int16_t lr;
+} __packed;
+
+struct asm_stream_cmd_set_pp_params_sa_ep {
+	struct apr_hdr	hdr;
+	struct asm_stream_cmd_set_pp_params_v2 param;
+	struct asm_stream_param_data_v2 data;
+
+	int32_t enable;
+	int32_t score;
+} __packed;
+
 /*
  * Opcode for AFE to start DTMF.
  */
@@ -6941,4 +7049,50 @@ struct afe_svc_cmd_set_clip_bank_selection {
 #define US_RAW_FORMAT_V2        0x0001272C
 #define US_PROX_FORMAT_V2       0x0001272E
 
+#ifdef CONFIG_SND_SOC_MAX98504
+/* Integrating DSM specific AMD IDs */
+#define ADM_CUSTOM_PP_TOPO_ID_DYNAMIC 0x10000098
+#define ADM_CUSTOM_PP_TX_TOPO_ID_DYNAMIC 0x100000AB
+
+/* Structure for APR payload for the ADD_TOPOLOGY command */
+struct adm_cmd_add_topologies_v5_t {
+    u32 data_payload_addr_lsw;
+    /* LSW of the parameter data payload address. */
+    u32 data_payload_addr_msw;
+    /* MSW of the parameter data payload address. */
+    u32 mem_map_handle;
+    /* Unique identifier for an address
+    This memory map handle is returned by the aDSP through the
+    ADM_CMD_SHARED_MEM_MAP_REGIONS command. */
+    u32 buffer_size;
+    /* Size in bytes of the valid data in the topology buffer. */
+}__packed;
+
+struct adm_custom_topo_add{
+    struct apr_hdr hdr;
+    struct adm_cmd_add_topologies_v5_t param;
+} __packed;
+
+/* Topology ID */
+#define ASM_STREAM_PP_CUSTOM_FILTER_TOPO_ID 0x10010000
+
+/* module Id */
+#define MODULE_ID_DSM_FILTER 0x10010095
+
+/* parameters */
+#define PARAM_ID_DSM_FILTER_ENABLE 0x10002001
+#define PARAM_ID_DSM_FILTER_SHIFT 0x10002002
+#define PARAM_ID_DSM_FILTER_PARAM 0x10002003
+
+/* COMMAND IDs for DSM module */
+#define DSM_ID_FILTER_DISABLE 0x00000000
+#define DSM_ID_FILTER_ENABLE 0x00000001
+#define DSM_ID_FILTER_GET_PARAMS 0x00000002
+#define DSM_ID_FILTER_SET_CNTRLS 0x00000003
+#define DSM_ID_FILTER_SHIFT_3 0x00000004
+#define DSM_ID_FILTER_SHIFT_4 0x00000005
+
+#define DSM_ID_FILTER_PARAMS_RXINIT   0x00000006
+#define DSM_ID_FILTER_PARAMS_TXINIT   0x00000007
+#endif
 #endif /*_APR_AUDIO_V2_H_ */

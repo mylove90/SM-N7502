@@ -1968,6 +1968,7 @@ static void msm_spi_workq(struct work_struct *work)
 		container_of(work, struct msm_spi, work_data);
 	unsigned long        flags;
 	u32                  status_error = 0;
+	int ret = 0;
 
 	pm_runtime_get_sync(dd->dev);
 
@@ -1978,8 +1979,15 @@ static void msm_spi_workq(struct work_struct *work)
 	 * This way, resume can be left empty and device will be put in
 	 * active mode only if client requests anything on the bus
 	 */
-	if (!pm_runtime_enabled(dd->dev))
-		msm_spi_pm_resume_runtime(dd->dev);
+	if (!pm_runtime_enabled(dd->dev)) {
+		ret = msm_spi_pm_resume_runtime(dd->dev);
+		if(ret) {
+			dev_err(dd->dev,
+			"%s: SPI msm_spi_pm_resume_runtime failed with error %d\n",
+			__func__,ret);
+			return;
+		}
+	}
 
 	if (dd->use_rlock)
 		remote_mutex_lock(&dd->r_lock);
@@ -2058,6 +2066,7 @@ static int msm_spi_setup(struct spi_device *spi)
 {
 	struct msm_spi	*dd;
 	int              rc = 0;
+	int              ret = 0;
 	u32              spi_ioc;
 	u32              spi_config;
 	u32              mask;
@@ -2083,8 +2092,15 @@ static int msm_spi_setup(struct spi_device *spi)
 	mutex_lock(&dd->core_lock);
 
 	/* Counter-part of system-suspend when runtime-pm is not enabled. */
-	if (!pm_runtime_enabled(dd->dev))
-		msm_spi_pm_resume_runtime(dd->dev);
+	if (!pm_runtime_enabled(dd->dev)) {
+		ret = msm_spi_pm_resume_runtime(dd->dev);
+		if(ret) {
+			dev_err(dd->dev,
+			"%s: SPI msm_spi_pm_resume_runtime failed with error %d\n",
+			__func__,ret);
+			return ret;
+		}
+	}
 
 	if (dd->suspended) {
 		mutex_unlock(&dd->core_lock);
