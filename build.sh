@@ -1,5 +1,5 @@
 #!/bin/bash
-rm -rf output
+#rm -rf output
 export ARCH=arm
 if ! d [ arm-linux-androideabi-4.9 ]; then
 git clone -b android-8.0.0_r51 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/
