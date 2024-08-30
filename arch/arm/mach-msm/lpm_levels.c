@@ -61,7 +61,7 @@ static struct notifier_block __refdata msm_lpm_cpu_nblk = {
 };
 
 static uint32_t allowed_l2_mode;
-static uint32_t sysfs_dbg_l2_mode = MSM_SPM_L2_MODE_POWER_COLLAPSE;
+static uint32_t sysfs_dbg_l2_mode __refdata = MSM_SPM_L2_MODE_POWER_COLLAPSE;
 static uint32_t default_l2_mode;
 
 static bool no_l2_saw;
@@ -600,7 +600,7 @@ fail:
 	return -EFAULT;
 }
 
-static struct of_device_id msm_lpm_levels_match_table[] = {
+static struct of_device_id msm_lpm_levels_match_table[] __initdata = {
 	{.compatible = "qcom,lpm-levels"},
 	{},
 };

@@ -193,7 +193,7 @@ else ifeq ($(CONFIG_MACH_BAFFIN2_SGLTE),y)
 		dtb-$(CONFIG_ARCH_MSM8226)	+= msm8226-sec-baffin2sgltechn-r06.dtb
 		dtb-$(CONFIG_ARCH_MSM8226)	+= msm8226-sec-baffin2sgltechn-r07.dtb
 		dtb-$(CONFIG_ARCH_MSM8226)	+= msm8226-sec-baffin2sgltechn-r08.dtb
-else ifeq($(CONFIG_MACH_MS01_LTE_KOR),y)
+else ifeq ($(CONFIG_MACH_MS01_LTE_KOR),y)
 		dtb-$(CONFIG_ARCH_MSM8226)      += msm8926-sec-ms01ltekor-r00.dtb	
 endif
 
